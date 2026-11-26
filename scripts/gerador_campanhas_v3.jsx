@@ -14,26 +14,34 @@
       Mais de 8 produtos no mesmo cliente: vira "parte 1", "parte 2" (uma por execução).
       Para refazer uma campanha, apague o .ai dela e rode de novo.
       Cada geração registra uma linha em "relatorio_lote.txt" ao lado do JSON.
-    - Automático (PowerShell, sem janelas): rodar_lote.ps1 define $.global.LOTE_AUTO.
+    - Automático (sem janelas): rodar_lote.ps1 (Windows) ou rodar_lote.sh (macOS)
+      definem $.global.LOTE_AUTO.
       Gera em sequência todas as campanhas pendentes (gera, salva, fecha, próxima)
       e devolve um resumo: STATUS, GERADAS, PENDÊNCIAS, ERROS e JÁ EXISTIAM.
       Cliente com pendência é pulado; os demais são gerados.
 
     FORMATO DO JSON (modo lote)
+    Campanha, CP base e fotos podem ser definidos no lote (padrão para todos) ou
+    em cada cliente (o do cliente vale). Assim um lote mistura campanhas:
+    cliente A na Black, cliente B no Natal, cada um com seu CP base e suas fotos.
     {
-      "campanha": "Prorrogação Black",
-      "pasta_fotos": "Fotos - Fundo loja",          // relativo à pasta do JSON ou absoluto
-      "arquivo_base": "Fotos - Fundo loja/CP base - X.ai", // opcional (padrão: "CP base*" da pasta_fotos)
+      "campanha": "Prorrogação Black",               // padrão do lote (opcional se cada cliente tiver)
+      "pasta_fotos": "Fotos/Fundo loja",             // relativo à pasta do JSON ou absoluto
+      "arquivo_base": "Campanhas base/CP base - X.ai", // opcional (padrão: "CP base*" da pasta_fotos)
       "pasta_saida": "Campanhas geradas",            // opcional (padrão: <pasta do JSON>/Campanhas geradas)
       "clientes": [
         {
           "cliente": "Anjos Caxias do Sul",
           "clickup_id": "17txe6ym9ap",               // opcional, só para o relatório
+          "campanha": "Natal",                       // opcional: substitui a do lote
+          "arquivo_base": "Campanhas base/CP base - Natal.ai", // opcional: substitui o do lote
+          "pasta_fotos": "Fotos/Natal",              // opcional: substitui a do lote
           "pasta_saida": "G:/Meu Drive/.../02 - Editáveis Campanhas/12 DEZ - Prorrogação Black",
                                                      // opcional; a pasta-mãe tem de existir, a última é criada
           "produtos": [
             {
               "foto": "Differenza Casal.png",        // nome do arquivo na pasta_fotos (extensão opcional)
+                                                     // vazio ou não encontrado = quadro verde neon (aviso)
               "nome": "Differenza",                  // opcional (padrão: nome do arquivo sem tamanho/AZUL)
               "categoria": "Conjunto Box",
               "tamanho": "Casal",                    // Solteiro | Solteirão | Casal | Queen | King | Neutro
@@ -41,11 +49,13 @@
               "medida": "",                          // obrigatório só no tamanho Neutro
               "beneficios": ["Molas ensacadas", "Conforto na medida certa"],
                                                      // até 3 (lista ou "A | B"); vazio/ausente = remove os marcadores
-              "preco": "parcelado",                  // a_vista | oferta | parcelado | desconto
-              "V_DE": "3399",                        // só número inteiro, sem centavos
+              "preco": "parcelado",                  // a_vista | oferta | parcelado | desconto | sem_preco
+                                                     // sem_preco = nenhum bloco de preço na arte
+              "V_DE": "3399",                        // inteiro ou com centavos ("4980" / "199,90")
               "V_X": "18X",                          // número + X maiúsculo
-              "V_parcela": "115",                    // só número inteiro
-              "V_total": "2070",                     // só número inteiro
+              "V_parcela": "115",                    // inteiro ou com centavos
+              "V_total": "2070",                     // inteiro ou com centavos
+                                                     // campo do grupo vazio = fica em branco (aviso)
               "V_%": "",                             // só número inteiro
               "V_Oferta_TXT": ""                     // texto livre
             }
@@ -152,6 +162,8 @@
         "Conjunto",
         "Conjunto Box",
         "Colchão",
+        "Colchão + Box",
+        "Cama",
         "Sofá",
         "Sofá-cama",
         "Sofá Retrátil",
@@ -186,9 +198,44 @@
 
     var PRICE_GROUP_GAP = 24;
 
+    // Produto sem preço no card (estética da campanha): nenhum bloco de preço é inserido.
+    var NO_PRICE_GROUP = "sem_preco";
+
+    // Produto sem foto: quadro verde neon do tamanho da prancheta, na camada "fotos",
+    // para o designer localizar e trocar pela foto certa.
+    var MISSING_PHOTO_RGB = [57, 255, 20];
+
+    // Tags de valor cujo ",00" fica num texto separado no CP base (ex.: "R$ {{V_parcela}}" + ",00").
+    var CENTS_TAGS = ["V_DE", "V_parcela", "V_total"];
+
     // Marcadores de benefício do CP base: texto de exemplo de cada linha (pílula + ponto + texto).
     var BENEFIT_PLACEHOLDER = "Para que busca conforto";
     var MAX_BENEFITS = 3;
+
+    // Quebra de linha forçada do Illustrator (Shift+Enter): mantém o mesmo parágrafo.
+    // No JSON, "\n" dentro do texto vira esta quebra (frase e benefícios).
+    var FORCED_BREAK = "\u0003";
+
+    // Frase de destaque: texto "{{frase}}" no CP base (Story e Feed).
+    // No JSON: "frase": "Mais *espaço e praticidade* para receber bem."
+    //   *palavras* = destaque na versão Bold da mesma família da fonte do CP base.
+    //   Sem "\n", a frase é quebrada em 2 linhas equilibradas quando passa deste tamanho.
+    var FRASE_TAG = "frase";
+    var FRASE_AUTO_BREAK_MIN = 26;
+
+    // Cidade: símbolo "city" do CP base com o texto "Cidade" (ou "{{cidade}}").
+    // O script edita o símbolo uma vez e todas as instâncias continuam como símbolo.
+    var CITY_SYMBOL_NAMES = ["city", "cidade"];
+    var CITY_TEXT_FIT = 0.9; // o texto ocupa no máximo 90% da pílula do símbolo
+
+    // Áreas de diagramação: retângulos invisíveis (camada guides) no CP base, nomeados:
+    //   "area_nome"  -> bloco nome/categoria/tamanho centralizado na área
+    //   "area_preco" -> grupo de preço centralizado na área (na largura e na altura)
+    //   "area_info"  -> linha nome + preço centralizada na área
+    // Opções no nome: "| esquerda", "| direita", "| max 145%" (o nome pode crescer até 145%),
+    // "| espaco 130" (distância nome-preço na area_info).
+    var SLOT_RE = /^\s*area_(nome|preco|info)\b(.*)$/i;
+    var NAME_FIT_EXPONENT = 0.5; // nomes curtos crescem mais que nomes longos
 
     // Palavras removidas do nome do arquivo da foto quando o produto não tem "nome"
     // (ex.: "Genialle Casal.png" -> "Genialle").
@@ -258,11 +305,13 @@
         } catch (e) {}
     }
 
-    // Modo automático (PowerShell / COM): defina antes de rodar
-    //   $.global.LOTE_AUTO = { json: "C:/caminho/lote.json" };
+    // Modo automático (Windows: rodar_lote.ps1 via COM | macOS: rodar_lote.sh via AppleScript):
+    // defina antes de rodar
+    //   $.global.LOTE_AUTO = { json: "C:/caminho/lote.json" };   (ou "/Users/.../lote.json" no Mac)
     // O script pula janelas e confirmações, gera a próxima campanha pendente
     // e devolve o resultado em $.global.LOTE_AUTO_RESULT (texto).
     var AUTO = null;
+    var IS_MAC = (typeof $ !== "undefined" && /mac/i.test(String($.os)));
     try {
         if (typeof $ !== "undefined" && $.global.LOTE_AUTO && $.global.LOTE_AUTO.json) AUTO = $.global.LOTE_AUTO;
     } catch (autoErr) {}
@@ -433,7 +482,8 @@
                 sourceFeedRect: sourceFeedRect,
                 sourceLayoutCache: sourceLayoutCache,
                 priceGroupCache: priceGroupCache,
-                priceGroupTags: detectPriceGroupTags(priceGroupCache)
+                priceGroupTags: detectPriceGroupTags(priceGroupCache),
+                feedPriceScale: detectFeedPriceScale(sourceLayoutCache)
             };
         } catch (e) {
             try { baseDoc.close(SaveOptions.DONOTSAVECHANGES); } catch (closeErr) {}
@@ -492,7 +542,10 @@
     }
 
     // Gera um documento novo com Story + Feed para cada item e retorna o documento.
-    function generateCampaignDocument(ctx, selectedItems) {
+    // opts (opcional, modo lote): { cidade: "Campo Grande", warnings: [] }
+    function generateCampaignDocument(ctx, selectedItems, opts) {
+        opts = opts || {};
+        if (!opts.warnings) opts.warnings = [];
         prepareSelectedItems(selectedItems);
 
         var targetDoc = createTargetDocument(selectedItems);
@@ -517,13 +570,23 @@
                 var feedRect = selectedItem.feedRect;
 
                 var storyDupMap = duplicateLayoutFromCache(ctx.sourceLayoutCache.story, targetLayerMap, ctx.sourceStoryRect, storyRect);
-                fillArtboardText(ctx, ctx.priceGroupCache.story, targetLayerMap, storyDupMap, selectedItem, productTagData);
+                fillArtboardText(ctx, ctx.priceGroupCache.story, targetLayerMap, storyDupMap, selectedItem, productTagData, "story", opts);
 
                 var feedDupMap = duplicateLayoutFromCache(ctx.sourceLayoutCache.feed, targetLayerMap, ctx.sourceFeedRect, feedRect);
-                fillArtboardText(ctx, ctx.priceGroupCache.feed, targetLayerMap, feedDupMap, selectedItem, productTagData);
+                fillArtboardText(ctx, ctx.priceGroupCache.feed, targetLayerMap, feedDupMap, selectedItem, productTagData, "feed", opts);
 
-                placeImageWithClipping(targetDoc, targetLayerMap["fotos"], productFile, storyRect, productName + " - Story");
-                placeImageWithClipping(targetDoc, targetLayerMap["fotos"], productFile, feedRect, productName + " - Feed");
+                if (productFile) {
+                    placeImageWithClipping(targetDoc, targetLayerMap["fotos"], productFile, storyRect, productName + " - Story");
+                    placeImageWithClipping(targetDoc, targetLayerMap["fotos"], productFile, feedRect, productName + " - Feed");
+                } else {
+                    placeMissingPhotoBox(targetDoc, targetLayerMap["fotos"], storyRect, productName + " - Story");
+                    placeMissingPhotoBox(targetDoc, targetLayerMap["fotos"], feedRect, productName + " - Feed");
+                }
+            }
+
+            if (opts.cidade) {
+                var cityWarning = applyCitySymbol(targetDoc, opts.cidade);
+                if (cityWarning) opts.warnings.push((opts.label ? opts.label + ": " : "") + cityWarning);
             }
         } catch (genErr) {
             genErr.targetDoc = targetDoc;
@@ -537,7 +600,7 @@
     // MODO LOTE (JSON)
     // =========================
     function runBatchMode() {
-        var jsonFile = AUTO ? new File(AUTO.json) : File.openDialog("Selecione o arquivo JSON do lote", "JSON:*.json,Todos:*.*", false);
+        var jsonFile = AUTO ? new File(AUTO.json) : File.openDialog("Selecione o arquivo JSON do lote", IS_MAC ? function (f) { return (f instanceof Folder) || /\.json$/i.test(safeDecode(f.name)); } : "JSON:*.json,Todos:*.*", false);
         if (!jsonFile) return;
         if (!jsonFile.exists) { notify("JSON não encontrado: " + jsonFile.fsName); return; }
 
@@ -612,8 +675,8 @@
             "CLIENTE: " + job.label + "\n" +
             "Produtos: " + job.items.length + "\n" +
             "Salvar como: " + safeDecode(job.outFile.name) + "\n\n" +
-            "Campanha: " + plan.campanha + "\n" +
-            "CP base: " + safeDecode(plan.baseFile.name) + "\n" +
+            "Campanha: " + job.client.campanha + "\n" +
+            "CP base: " + safeDecode(job.client.baseFile.name) + "\n" +
             "Pasta de saída: " + job.client.outFolder.fsName + "\n" +
             "Já geradas: " + doneCount + " de " + jobs.length +
             (plan.warnings.length ? "\n\nAvisos:\n" + plan.warnings.join("\n") : "") +
@@ -627,7 +690,7 @@
         var logFile = plan.logFile;
 
         try {
-            ctx = openBaseContext(plan.baseFile);
+            ctx = openBaseContext(job.client.baseFile);
         } catch (baseErr) {
             restoreIllustratorAlerts(uiState);
             notify("Erro ao abrir o CP base:\n\n" + baseErr.message);
@@ -636,7 +699,7 @@
 
         // Segunda validação: com o CP base aberto, confere se cada produto
         // preencheu todas as tags que existem no grupo de preço escolhido.
-        var tagErrors = validatePriceTagsAgainstBase(job.items, ctx.priceGroupTags);
+        var tagErrors = validatePriceTagsAgainstBase(job.items, ctx.priceGroupTags, plan.warnings);
         if (tagErrors.length > 0) {
             var groupInfo = describePriceGroupTags(ctx.priceGroupTags);
             closeBaseContext(ctx);
@@ -648,7 +711,7 @@
         var saved = false;
         try {
             ensureOutputFolder(job.client.outFolder);
-            targetDoc = generateCampaignDocument(ctx, job.items);
+            targetDoc = generateCampaignDocument(ctx, job.items, { cidade: job.client.cidade, warnings: plan.warnings, label: job.label });
             var embedFailed = plan.embed ? embedAllPlacedItems(targetDoc) : [];
             saveDocumentAsAi(targetDoc, job.outFile);
             saved = true;
@@ -745,21 +808,36 @@
             else toRun.push(jb);
         }
 
+        // Agrupa por CP base: cada arquivo-base é aberto uma vez só.
+        var baseGroups = [];
+        var baseIndex = {};
+        for (var t = 0; t < toRun.length; t++) {
+            var bKey = normalizeKey(toRun[t].client.baseFile.fsName);
+            if (!baseIndex.hasOwnProperty(bKey)) {
+                baseIndex[bKey] = baseGroups.length;
+                baseGroups.push({ baseFile: toRun[t].client.baseFile, jobs: [] });
+            }
+            baseGroups[baseIndex[bKey]].jobs.push(toRun[t]);
+        }
+
         if (toRun.length > 0) {
             var uiState = suppressIllustratorAlerts();
+
+          for (var bg = 0; bg < baseGroups.length; bg++) {
+            var groupJobs = baseGroups[bg].jobs;
             var ctx = null;
 
             try {
-                ctx = openBaseContext(plan.baseFile);
+                ctx = openBaseContext(baseGroups[bg].baseFile);
             } catch (baseErr) {
-                for (var b = 0; b < toRun.length; b++) failed.push({ job: toRun[b], message: "Erro ao abrir o CP base: " + baseErr.message });
-                toRun = [];
+                for (var b = 0; b < groupJobs.length; b++) failed.push({ job: groupJobs[b], message: "Erro ao abrir o CP base " + safeDecode(baseGroups[bg].baseFile.name) + ": " + baseErr.message });
+                continue;
             }
 
-            for (var r = 0; r < toRun.length; r++) {
-                var job = toRun[r];
+            for (var r = 0; r < groupJobs.length; r++) {
+                var job = groupJobs[r];
 
-                var tagErrors = validatePriceTagsAgainstBase(job.items, ctx.priceGroupTags);
+                var tagErrors = validatePriceTagsAgainstBase(job.items, ctx.priceGroupTags, plan.warnings);
                 if (tagErrors.length > 0) {
                     pending.push({ job: job, errors: tagErrors.concat([describePriceGroupTags(ctx.priceGroupTags)]) });
                     continue;
@@ -769,7 +847,7 @@
                 var saved = false;
                 try {
                     ensureOutputFolder(job.client.outFolder);
-                    targetDoc = generateCampaignDocument(ctx, job.items);
+                    targetDoc = generateCampaignDocument(ctx, job.items, { cidade: job.client.cidade, warnings: plan.warnings, label: job.label });
                     job.embedFailed = plan.embed ? embedAllPlacedItems(targetDoc) : [];
                     saveDocumentAsAi(targetDoc, job.outFile);
                     saved = true;
@@ -799,6 +877,7 @@
             }
 
             closeBaseContext(ctx);
+          }
             restoreIllustratorAlerts(uiState);
         }
 
@@ -814,13 +893,20 @@
 
         var lines = [];
         lines.push("STATUS: " + status);
-        lines.push("Campanha: " + plan.campanha + " | CP base: " + safeDecode(plan.baseFile.name));
+        var seenCamp = {};
+        for (var sc = 0; sc < plan.clients.length; sc++) {
+            var cl = plan.clients[sc];
+            if (!cl.campanha || !cl.baseFile) continue;
+            var campLine = "Campanha: " + cl.campanha + " | CP base: " + safeDecode(cl.baseFile.name) +
+                (cl.fotosFolder ? " | Fotos: " + safeDecode(cl.fotosFolder.name) : "");
+            if (!seenCamp[campLine]) { seenCamp[campLine] = true; lines.push(campLine); }
+        }
 
         if (generated.length) {
             lines.push("");
             lines.push("GERADAS (" + generated.length + "):");
             for (var g = 0; g < generated.length; g++) {
-                lines.push("- " + generated[g].label + " (" + generated[g].items.length + " produtos) -> " + generated[g].outFile.fsName);
+                lines.push("- " + generated[g].label + " [" + generated[g].client.campanha + "] (" + generated[g].items.length + " produtos) -> " + generated[g].outFile.fsName);
                 var ef = generated[g].embedFailed || [];
                 for (var q = 0; q < ef.length; q++) lines.push("    ATENÇÃO - não incorporado: " + ef[q]);
             }
@@ -863,7 +949,7 @@
             var clientName = client.cliente || ("Cliente " + (c + 1));
 
             for (var k = 0; k < chunks.length; k++) {
-                var baseName = client.arquivo || (clientName + " - " + plan.campanha);
+                var baseName = client.arquivo || (clientName + " - " + client.campanha);
                 var label = clientName;
                 if (chunks.length > 1) {
                     baseName += " - parte " + (k + 1);
@@ -907,27 +993,30 @@
             return plan;
         }
 
-        plan.campanha = trimText(data.campanha) || "Campanha";
+        // Padrões do lote. Cada cliente pode ter "campanha", "arquivo_base" e
+        // "pasta_fotos" próprios (lote com campanhas diferentes).
+        plan.campanha = trimText(data.campanha);
         checkPending("campanha", data.campanha, plan.errors);
+        checkPending("pasta_fotos", data.pasta_fotos, plan.errors);
+        checkPending("arquivo_base", data.arquivo_base, plan.errors);
+        if (plan.errors.length > 0) return plan;
 
-        // Pasta das fotos
+        // Pasta das fotos do lote (padrão: pasta do JSON)
         var fotosPath = trimText(data.pasta_fotos);
         plan.fotosFolder = fotosPath ? resolveFolder(fotosPath, jsonFolder) : jsonFolder;
-        if (!plan.fotosFolder || !plan.fotosFolder.exists) {
+        if (fotosPath && !plan.fotosFolder.exists) {
             plan.errors.push("pasta_fotos não encontrada: " + fotosPath);
             return plan;
         }
 
-        // CP base
+        // CP base do lote (opcional; sem ele, procura "CP base*" na pasta de fotos do cliente)
         var basePath = trimText(data.arquivo_base);
         if (basePath) {
             plan.baseFile = resolveFile(basePath, jsonFolder);
-            if (!plan.baseFile || !plan.baseFile.exists) {
+            if (!plan.baseFile.exists) {
                 plan.errors.push("arquivo_base não encontrado: " + basePath);
+                return plan;
             }
-        } else {
-            plan.baseFile = findBaseFile(plan.fotosFolder);
-            if (!plan.baseFile) plan.errors.push('Não encontrei nenhum arquivo "CP base" em ' + plan.fotosFolder.fsName + ' (ou informe "arquivo_base").');
         }
 
         // Saída
@@ -939,9 +1028,13 @@
         // Por padrão o lote incorpora as imagens ao salvar ("incorporar_imagens": false desliga).
         plan.embed = data.incorporar_imagens !== false;
 
-        // Fotos disponíveis
-        var imageFiles = getImageFiles(plan.fotosFolder);
-        if (imageFiles.length === 0) plan.errors.push("Nenhuma imagem encontrada em " + plan.fotosFolder.fsName);
+        // Fotos já listadas, por pasta (vários clientes costumam usar a mesma).
+        var imageCache = {};
+        function imagesOf(folder) {
+            var key = folder.fsName;
+            if (!imageCache.hasOwnProperty(key)) imageCache[key] = getImageFiles(folder);
+            return imageCache[key];
+        }
 
         if (!(data.clientes instanceof Array) || data.clientes.length === 0) {
             plan.errors.push("A lista \"clientes\" está vazia ou ausente.");
@@ -958,6 +1051,10 @@
                 cliente: clientName,
                 clickup_id: trimText(rawClient.clickup_id),
                 arquivo: trimText(rawClient.arquivo),
+                campanha: trimText(rawClient.campanha) || plan.campanha,
+                cidade: trimText(rawClient.cidade),
+                baseFile: null,
+                fotosFolder: null,
                 outFolder: plan.outFolder,
                 items: [],
                 errors: []
@@ -967,6 +1064,38 @@
             if (!clientName) plan.errors.push(clientLabel + ": campo \"cliente\" vazio (ele é usado no nome do arquivo).");
             checkPending(clientLabel + " > cliente", rawClient.cliente, plan.errors);
             checkPending(clientLabel + " > arquivo", rawClient.arquivo, client.errors);
+
+            // Campanha, fotos e CP base do cliente (ou os padrões do lote).
+            // Problema aqui bloqueia só este cliente.
+            var configBefore = client.errors.length;
+            checkPending(clientLabel + " > campanha", rawClient.campanha, client.errors);
+            checkPending(clientLabel + " > pasta_fotos", rawClient.pasta_fotos, client.errors);
+            checkPending(clientLabel + " > arquivo_base", rawClient.arquivo_base, client.errors);
+            if (!client.campanha && client.errors.length === configBefore) {
+                client.errors.push(clientLabel + ": campanha vazia (informe \"campanha\" no lote ou no cliente).");
+            }
+            var imageFiles = [];
+            if (client.errors.length === configBefore) {
+                var clientFotos = trimText(rawClient.pasta_fotos);
+                client.fotosFolder = clientFotos ? resolveFolder(clientFotos, jsonFolder) : plan.fotosFolder;
+                if (!client.fotosFolder.exists) {
+                    client.errors.push(clientLabel + ": pasta_fotos não encontrada: " + client.fotosFolder.fsName);
+                } else {
+                    imageFiles = imagesOf(client.fotosFolder);
+                    if (imageFiles.length === 0) client.errors.push(clientLabel + ": nenhuma imagem em " + client.fotosFolder.fsName);
+                }
+
+                var clientBase = trimText(rawClient.arquivo_base);
+                if (clientBase) {
+                    client.baseFile = resolveFile(clientBase, jsonFolder);
+                    if (!client.baseFile.exists) client.errors.push(clientLabel + ": arquivo_base não encontrado: " + client.baseFile.fsName);
+                } else if (plan.baseFile) {
+                    client.baseFile = plan.baseFile;
+                } else if (client.fotosFolder.exists) {
+                    client.baseFile = findBaseFile(client.fotosFolder);
+                    if (!client.baseFile) client.errors.push(clientLabel + ': nenhum "CP base" em ' + client.fotosFolder.fsName + ' (informe "arquivo_base").');
+                }
+            }
 
             // Pasta de saída do cliente: pode faltar só o último nível (a pasta da
             // campanha), que é criado na geração. A pasta-mãe tem de existir.
@@ -980,6 +1109,11 @@
                         client.errors.push(clientLabel + ": pasta_saida inválida - nem a pasta nem a pasta-mãe existem: " + client.outFolder.fsName);
                     }
                 }
+            }
+
+            if (client.errors.length > configBefore) {
+                plan.clients.push(client);
+                continue;
             }
 
             if (!(rawClient.produtos instanceof Array) || rawClient.produtos.length === 0) {
@@ -1012,13 +1146,15 @@
         if (errors.length > startErrors) return null;
 
         // Foto
+        // Sem foto (campo vazio ou arquivo não encontrado): gera com o quadro verde neon.
         var fotoName = trimText(raw.foto);
         var fileRef = null;
         if (!fotoName) {
-            errors.push(label + ": campo \"foto\" vazio.");
+            plan.warnings.push(label + ": SEM FOTO - quadro verde neon no lugar da foto.");
         } else {
             var match = findImageByName(imageFiles, fotoName);
-            if (match.error) errors.push(label + ": " + match.error);
+            if (match.ambiguous) errors.push(label + ": " + match.error);
+            else if (match.error) plan.warnings.push(label + ": SEM FOTO - " + match.error + " Quadro verde neon no lugar da foto.");
             else fileRef = match.file;
         }
         if (fotoName) label += " [" + fotoName + "]";
@@ -1063,15 +1199,19 @@
 
         // Grupo de preço
         var priceRaw = raw.preco !== undefined ? raw.preco : raw.priceGroup;
-        var priceGroup = matchOption(String(priceRaw === undefined || priceRaw === null ? "" : priceRaw).replace(/\s+/g, "_"), PRICE_GROUP_OPTIONS);
-        if (!priceGroup) errors.push(label + ": preço inválido \"" + trimText(priceRaw) + "\". Use: " + PRICE_GROUP_OPTIONS.join(", "));
+        var priceKey = String(priceRaw === undefined || priceRaw === null ? "" : priceRaw).replace(/\s+/g, "_");
+        var priceGroup = matchOption(priceKey, PRICE_GROUP_OPTIONS.concat([NO_PRICE_GROUP]));
+        if (!priceGroup) errors.push(label + ": preço inválido \"" + trimText(priceRaw) + "\". Use: " + PRICE_GROUP_OPTIONS.concat([NO_PRICE_GROUP]).join(", "));
 
-        // Valores manuais no formato padronizado
+        // Valores manuais no formato padronizado.
+        // V_DE, V_parcela e V_total aceitam centavos ("199,90"): o inteiro vai na tag
+        // e os centavos substituem o ",00" fixo do CP base ao lado do valor.
         var values = createEmptyManualValues();
-        values.V_DE = normalizeIntegerValue(raw.V_DE, label + " > V_DE", errors);
+        var cents = {};
+        values.V_DE = normalizeMoneyValue(raw.V_DE, label + " > V_DE", errors, cents, "V_DE");
         values.V_X = normalizeInstallmentsValue(raw.V_X, label + " > V_X", errors);
-        values.V_parcela = normalizeIntegerValue(raw.V_parcela, label + " > V_parcela", errors);
-        values.V_total = normalizeIntegerValue(raw.V_total, label + " > V_total", errors);
+        values.V_parcela = normalizeMoneyValue(raw.V_parcela, label + " > V_parcela", errors, cents, "V_parcela");
+        values.V_total = normalizeMoneyValue(raw.V_total, label + " > V_total", errors, cents, "V_total");
         values["V_%"] = normalizeIntegerValue(raw["V_%"], label + " > V_%", errors);
         values.V_Oferta_TXT = trimText(raw.V_Oferta_TXT);
 
@@ -1095,17 +1235,23 @@
             medida: medida,
             semTamanho: semTamanho,
             beneficios: beneficios,
+            frase: raw.frase === undefined || raw.frase === null ? "" : String(raw.frase),
             priceGroup: priceGroup,
             manualValues: values,
+            cents: cents,
             label: label
         };
     }
 
-    function validatePriceTagsAgainstBase(items, priceGroupTags) {
+    // Erros: grupo de preço que não existe no CP base.
+    // Tags do grupo vazias no JSON não bloqueiam: ficam em branco para edição manual
+    // e são listadas em "warnings" (se for passado).
+    function validatePriceTagsAgainstBase(items, priceGroupTags, warnings) {
         var errors = [];
 
         for (var i = 0; i < items.length; i++) {
             var item = items[i];
+            if (item.priceGroup === NO_PRICE_GROUP) continue;
             var tags = priceGroupTags[item.priceGroup];
 
             if (tags === null || tags === undefined) {
@@ -1120,8 +1266,8 @@
                 if (!item.manualValues[tag]) missing.push(tag);
             }
 
-            if (missing.length > 0) {
-                errors.push(item.label + ": o grupo \"" + item.priceGroup + "\" usa " + missing.join(", ") + ", mas está vazio no JSON.");
+            if (missing.length > 0 && warnings) {
+                warnings.push(item.label + ": " + missing.join(", ") + " em branco no grupo \"" + item.priceGroup + "\" (preencher à mão).");
             }
         }
 
@@ -1174,6 +1320,22 @@
         return String(parseInt(s, 10));
     }
 
+    // V_DE, V_parcela, V_total: inteiro + centavos opcionais ("4.980,00" -> "4980";
+    // "199,90" -> "199" e cents[key] = "90"). Nunca arredonda.
+    function normalizeMoneyValue(value, label, errors, cents, key) {
+        if (value === undefined || value === null) return "";
+        var s = trimText(value).replace(/R\$/gi, "").replace(/\s+/g, "");
+        if (s === "") return "";
+        var m = s.match(/^(.*),(\d{1,2})$/);
+        if (m && parseInt(m[2], 10) !== 0) {
+            var cc = m[2].length === 1 ? m[2] + "0" : m[2];
+            var intPart = normalizeIntegerValue(m[1], label, errors);
+            if (intPart !== "") cents[key] = cc;
+            return intPart;
+        }
+        return normalizeIntegerValue(value, label, errors);
+    }
+
     // V_X: número + X maiúsculo (ex.: 12X). Aceita "12", "12x", "12 X".
     function normalizeInstallmentsValue(value, label, errors) {
         if (value === undefined || value === null) return "";
@@ -1210,7 +1372,7 @@
         }
 
         if (matches.length === 1) return { file: matches[0] };
-        if (matches.length > 1) return { error: "foto \"" + wanted + "\" é ambígua (várias extensões); informe a extensão." };
+        if (matches.length > 1) return { ambiguous: true, error: "foto \"" + wanted + "\" é ambígua (várias extensões); informe a extensão." };
         return { error: "foto \"" + wanted + "\" não encontrada na pasta_fotos." };
     }
 
@@ -1220,12 +1382,18 @@
         for (var i = 0; i < options.length; i++) {
             if (normalizeKey(options[i]) === key) return options[i];
         }
+        var compact = key.replace(/\s*\+\s*/g, "+");
+        for (var j = 0; j < options.length; j++) {
+            if (normalizeKey(options[j]).replace(/\s*\+\s*/g, "+") === compact) return options[j];
+        }
         return null;
     }
 
     // Minúsculas, sem acentos e com espaços simples, para comparar nomes.
     function normalizeKey(value) {
-        var s = trimText(value).toLowerCase();
+        // No macOS os nomes de arquivo/pasta vêm decompostos (NFD: "a" + acento combinante);
+        // remove os acentos combinantes para comparar igual ao Windows (NFC).
+        var s = trimText(value).toLowerCase().replace(/[\u0300-\u036f]/g, "");
         var from = "áàâãäéèêëíìîïóòôõöúùûüçñ";
         var to = "aaaaaeeeeiiiiooooouuuucn";
         var out = "";
@@ -1308,7 +1476,7 @@
         try {
             var isNew = !file.exists;
             file.encoding = "UTF-8";
-            file.lineFeed = "Windows";
+            file.lineFeed = IS_MAC ? "Unix" : "Windows";
             if (!file.open(isNew ? "w" : "e")) return false;
             if (isNew) {
                 file.write("﻿");
@@ -2321,20 +2489,487 @@
     // PREENCHIMENTO DOS TEXTOS
     // =========================
     // Preenche os textos de uma prancheta (Story ou Feed) já duplicada do CP base.
-    function fillArtboardText(ctx, priceGroupArtCache, targetLayerMap, dupMap, item, tagData) {
+    function fillArtboardText(ctx, priceGroupArtCache, targetLayerMap, dupMap, item, tagData, kind, opts) {
+        opts = opts || { warnings: [] };
+        var warnings = opts.warnings || [];
+        var label = item.label || item.productName || "";
         var frames = collectTextFramesFromItems(dupMap["txt"]);
         var anchorBounds = findTagAnchorBoundsFromFrames(frames);
+        var nameBlock = findNameBlock(dupMap["txt"]);
         var priceGroup = addSelectedPriceGroupToArtboardFast(priceGroupArtCache, ctx.priceGroupCache.fallback, targetLayerMap["txt"], anchorBounds, item.priceGroup);
+
+        // Feed sem grupo de preço próprio: usa o do Story reduzido na mesma proporção do nome.
+        if (priceGroup && kind === "feed" && !priceGroupArtCache[item.priceGroup] && ctx.feedPriceScale && Math.abs(ctx.feedPriceScale - 1) > 0.01) {
+            scaleItemFromTopLeft(priceGroup, ctx.feedPriceScale);
+        }
 
         if (priceGroup && item.priceGroup === "oferta") {
             fillOfferFrames(priceGroup, item.manualValues ? item.manualValues.V_Oferta_TXT : "");
         }
+        if (priceGroup && item.cents) applyCents(priceGroup, item.cents);
         if (item.semTamanho) frames = removeSizeBlock(frames);
-        if (item.beneficios) applyBenefits(frames, item.beneficios);
+        if (item.beneficios) {
+            var slots = applyBenefits(frames, item.beneficios);
+            if (slots === 0 && item.beneficios.length > 0 && kind === "story") {
+                warnings.push(label + ": benefícios não aplicados (o CP base não tem marcadores \"" + BENEFIT_PLACEHOLDER + "\"): " + item.beneficios.join(" | "));
+            }
+        }
 
         frames = collectLiveFrames(frames);
+        var fraseResult = fillFraseFrames(frames, item.frase);
+        if (fraseResult.missing && kind === "story") warnings.push(label + ": sem frase de destaque - a caixa {{frase}} foi removida.");
+        if (fraseResult.noBold && kind === "story") warnings.push(label + ": fonte Bold da frase não encontrada (" + fraseResult.noBold + "); destaque sem negrito.");
+        frames = collectLiveFrames(frames);
+
         if (priceGroup) collectTextFramesRecursive(priceGroup, frames);
         applyTextTagsToFrames(uniqueTextFrames(frames), tagData);
+
+        applySlotLayout(dupMap, nameBlock, priceGroup);
+    }
+
+    // Bloco do nome: item de nível superior da camada txt que contém {{nome}}/{{Categoria}}.
+    // Precisa ser encontrado antes de as tags serem trocadas.
+    function findNameBlock(items) {
+        if (!items) return null;
+        for (var i = 0; i < items.length; i++) {
+            var fr = [];
+            collectTextFramesRecursive(items[i], fr);
+            for (var f = 0; f < fr.length; f++) {
+                if (isTagFrame(fr[f])) return items[i];
+            }
+        }
+        return null;
+    }
+
+    function scaleItemFromTopLeft(item, factor) {
+        var p = factor * 100;
+        try { item.resize(p, p, true, true, true, true, p, Transformation.TOPLEFT); } catch (e) {}
+    }
+
+    // Razão entre o {{nome}} do Feed e o do Story no CP base (ex.: 37,4 / 49,9 = 0,75).
+    function detectFeedPriceScale(layoutCache) {
+        function nomeSize(cacheSide) {
+            var items = cacheSide["txt"] || [];
+            for (var i = 0; i < items.length; i++) {
+                var fr = [];
+                collectTextFramesRecursive(items[i].item, fr);
+                for (var f = 0; f < fr.length; f++) {
+                    if (frameHasTag(fr[f], "nome")) {
+                        try { return fr[f].textRange.characterAttributes.size; } catch (e) {}
+                    }
+                }
+            }
+            return 0;
+        }
+        var s = nomeSize(layoutCache.story);
+        var f = nomeSize(layoutCache.feed);
+        if (!s || !f) return 1;
+        return f / s;
+    }
+
+    // =========================
+    // FRASE DE DESTAQUE
+    // =========================
+    function isFraseFrame(tf) {
+        var content = "";
+        try { content = tf.contents || ""; } catch (e) {}
+        return /\{\{\s*frase\s*\}\}/i.test(content);
+    }
+
+    // Retorna { missing: bool, noBold: "nome da fonte" | "" }.
+    function fillFraseFrames(frames, frase) {
+        var result = { missing: false, noBold: "" };
+        var targets = [];
+        for (var i = 0; i < frames.length; i++) {
+            if (isFraseFrame(frames[i])) targets.push(frames[i]);
+        }
+        if (targets.length === 0) return result;
+
+        if (!trimText(frase)) {
+            result.missing = true;
+            for (var r = 0; r < targets.length; r++) {
+                try { targets[r].remove(); } catch (eR) {}
+            }
+            return result;
+        }
+
+        var parsed = parseMarkedText(frase, true);
+        for (var t = 0; t < targets.length; t++) {
+            var miss = setMarkedText(targets[t], parsed);
+            if (miss) result.noBold = miss;
+        }
+        return result;
+    }
+
+    // "Mais *espaço* para\nreceber bem." -> { text: "Mais espaço para<quebra>receber bem.", bold: [[5, 11]] }
+    function parseMarkedText(raw, autoBreak) {
+        var s = String(raw).replace(/\r\n?/g, "\n").replace(/^\s+|\s+$/g, "");
+        var text = "";
+        var bold = [];
+        var open = -1;
+        for (var i = 0; i < s.length; i++) {
+            var ch = s.charAt(i);
+            if (ch === "*") {
+                if (open < 0) open = text.length;
+                else { if (text.length > open) bold.push([open, text.length]); open = -1; }
+                continue;
+            }
+            text += (ch === "\n") ? FORCED_BREAK : ch;
+        }
+        if (open >= 0 && text.length > open) bold.push([open, text.length]);
+
+        if (autoBreak && text.indexOf(FORCED_BREAK) < 0 && text.length >= FRASE_AUTO_BREAK_MIN) {
+            var cut = balancedBreakIndex(text);
+            if (cut > 0) text = text.substring(0, cut) + FORCED_BREAK + text.substring(cut + 1);
+        }
+        return { text: text, bold: bold };
+    }
+
+    // Índice do espaço que deixa as duas linhas com tamanhos mais parecidos.
+    function balancedBreakIndex(text) {
+        var mid = text.length / 2;
+        var best = -1;
+        var bestDist = Infinity;
+        for (var i = 1; i < text.length - 1; i++) {
+            if (text.charAt(i) !== " ") continue;
+            var d = Math.abs(i - mid);
+            if (d < bestDist) { bestDist = d; best = i; }
+        }
+        return best;
+    }
+
+    // Troca o texto mantendo a formatação do CP base (fonte, corpo, tracking, cor)
+    // e aplica a versão Bold da família nos trechos marcados. Retorna a fonte Bold
+    // procurada quando ela não existe ("" quando deu certo).
+    function setMarkedText(tf, parsed) {
+        var baseFont = null;
+        try { baseFont = tf.textRange.characters[0].characterAttributes.textFont; } catch (e) {}
+        safeSetTextContents(tf, parsed.text);
+        if (!parsed.bold.length) return "";
+
+        var boldFont = findBoldFont(baseFont);
+        if (!boldFont) return baseFont ? (baseFont.family + " Bold") : "Bold";
+
+        var chars = null;
+        try { chars = tf.textRange.characters; } catch (e2) {}
+        if (!chars) return "";
+        for (var b = 0; b < parsed.bold.length; b++) {
+            for (var c = parsed.bold[b][0]; c < parsed.bold[b][1] && c < chars.length; c++) {
+                try { chars[c].characterAttributes.textFont = boldFont; } catch (e3) {}
+            }
+        }
+        return "";
+    }
+
+    // Cache guardado na própria função: "var" no corpo do script não chega a rodar no modo automático.
+    function findBoldFont(baseFont) {
+        if (!baseFont) return null;
+        if (!findBoldFont.cache) findBoldFont.cache = {};
+        var BOLD_FONT_CACHE = findBoldFont.cache;
+        var family = "";
+        var name = "";
+        try { family = baseFont.family; name = baseFont.name; } catch (e) {}
+        if (BOLD_FONT_CACHE.hasOwnProperty(name)) return BOLD_FONT_CACHE[name];
+
+        var found = null;
+        // 1) Mesmo nome PostScript com o estilo trocado (Humanist521BT-Light -> Humanist521BT-Bold)
+        var dash = name.lastIndexOf("-");
+        if (dash > 0) {
+            try { found = app.textFonts.getByName(name.substring(0, dash) + "-Bold"); } catch (e2) { found = null; }
+        }
+        // 2) Qualquer "Bold" da mesma família (sem Italic)
+        if (!found) {
+            try {
+                for (var i = 0; i < app.textFonts.length; i++) {
+                    var f = app.textFonts[i];
+                    if (f.family === family && /^bold$/i.test(f.style)) { found = f; break; }
+                }
+            } catch (e3) {}
+        }
+        BOLD_FONT_CACHE[name] = found;
+        return found;
+    }
+
+    // =========================
+    // CIDADE (símbolo)
+    // =========================
+    // Edita o texto do símbolo "city" uma vez; todas as instâncias continuam símbolo.
+    // Retorna "" quando deu certo ou um aviso.
+    function applyCitySymbol(doc, city) {
+        var sym = null;
+        for (var s = 0; s < doc.symbols.length && !sym; s++) {
+            var sn = normalizeKey(doc.symbols[s].name);
+            for (var n = 0; n < CITY_SYMBOL_NAMES.length; n++) {
+                if (sn === CITY_SYMBOL_NAMES[n]) { sym = doc.symbols[s]; break; }
+            }
+        }
+        if (!sym) return "";
+
+        var insts = [];
+        for (var i = 0; i < doc.symbolItems.length; i++) {
+            try { if (doc.symbolItems[i].symbol === sym) insts.push(doc.symbolItems[i]); } catch (e) {}
+        }
+        if (insts.length === 0) return "";
+
+        var centers = [];
+        for (var c = 0; c < insts.length; c++) {
+            var b = insts[c].geometricBounds;
+            centers.push([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]);
+        }
+
+        var tmpLayer = doc.layers.add();
+        tmpLayer.name = "__cidade_tmp";
+        var group = null;
+        try {
+            var tmp = tmpLayer.symbolItems.add(sym);
+            doc.selection = null;
+            tmp.selected = true;
+            tmp.breakLink();
+            var sel = doc.selection;
+            group = tmpLayer.groupItems.add();
+            for (var k = sel.length - 1; k >= 0; k--) sel[k].move(group, ElementPlacement.PLACEATBEGINNING);
+            doc.selection = null;
+
+            var frames = [];
+            collectTextFramesRecursive(group, frames);
+            var target = null;
+            for (var f = 0; f < frames.length; f++) {
+                var txt = normalizeKey(frames[f].contents).replace(/[{}\s]/g, "");
+                if (txt === "cidade") { target = frames[f]; break; }
+            }
+            if (!target) {
+                tmpLayer.remove();
+                return "símbolo \"" + sym.name + "\" sem o texto \"Cidade\" - cidade não trocada.";
+            }
+
+            var pill = findContainerPath(group, target);
+            safeSetTextContents(target, city);
+            if (pill) {
+                var tb = target.geometricBounds;
+                var pb = pill.geometricBounds;
+                var maxW = (pb[2] - pb[0]) * CITY_TEXT_FIT;
+                var tw = tb[2] - tb[0];
+                if (tw > maxW && tw > 0) {
+                    var cx = (tb[0] + tb[2]) / 2, cy = (tb[1] + tb[3]) / 2;
+                    try { target.textRange.characterAttributes.size = target.textRange.characterAttributes.size * maxW / tw; } catch (eS) {}
+                    var nb = target.geometricBounds;
+                    target.translate(cx - (nb[0] + nb[2]) / 2, cy - (nb[1] + nb[3]) / 2);
+                }
+            }
+
+            var newSym = doc.symbols.add(group, SymbolRegistrationPoint.SYMBOLCENTERPOINT);
+            group.remove();
+            tmpLayer.remove();
+            tmpLayer = null;
+
+            for (var j = 0; j < insts.length; j++) {
+                insts[j].symbol = newSym;
+                var nb2 = insts[j].geometricBounds;
+                insts[j].translate(centers[j][0] - (nb2[0] + nb2[2]) / 2, centers[j][1] - (nb2[1] + nb2[3]) / 2);
+            }
+            var oldName = sym.name;
+            sym.remove();
+            newSym.name = oldName;
+        } catch (err) {
+            try { if (tmpLayer) tmpLayer.remove(); } catch (e2) {}
+            return "não foi possível trocar a cidade no símbolo \"" + sym.name + "\": " + err.message;
+        }
+        return "";
+    }
+
+    // Maior forma (pílula/contorno) que contém o centro do texto.
+    function findContainerPath(group, tf) {
+        var tb = tf.geometricBounds;
+        var cx = (tb[0] + tb[2]) / 2, cy = (tb[1] + tb[3]) / 2;
+        var best = null, bestArea = 0;
+        var paths = [];
+        (function walk(c) {
+            for (var i = 0; i < c.pageItems.length; i++) {
+                var it = c.pageItems[i];
+                if (it.typename === "GroupItem") walk(it);
+                else if (it.typename === "PathItem" || it.typename === "CompoundPathItem") paths.push(it);
+            }
+        })(group);
+        for (var p = 0; p < paths.length; p++) {
+            var b = paths[p].geometricBounds;
+            if (cx < b[0] || cx > b[2] || cy > b[1] || cy < b[3]) continue;
+            var area = (b[2] - b[0]) * (b[1] - b[3]);
+            if (area > bestArea) { bestArea = area; best = paths[p]; }
+        }
+        return best;
+    }
+
+    // =========================
+    // ÁREAS DE DIAGRAMAÇÃO (area_nome / area_preco / area_info)
+    // =========================
+    function collectSlots(dupMap) {
+        var slots = {};
+        var found = false;
+        var layers = ["guides", "txt"];
+        for (var l = 0; l < layers.length; l++) {
+            var items = dupMap[layers[l]] || [];
+            for (var i = 0; i < items.length; i++) {
+                var nm = "";
+                try { nm = items[i].name || ""; } catch (e) {}
+                var m = SLOT_RE.exec(nm);
+                if (!m) continue;
+                var type = m[1].toLowerCase();
+                var optText = normalizeKey(m[2] || "");
+                var slot = {
+                    item: items[i],
+                    bounds: items[i].geometricBounds,
+                    align: /esquerda/.test(optText) ? "left" : (/direita/.test(optText) ? "right" : "center"),
+                    max: 1,
+                    gap: PRICE_GROUP_GAP
+                };
+                var mm = /max\s*(\d+(?:[.,]\d+)?)\s*%?/.exec(optText);
+                if (mm) slot.max = parseFloat(mm[1].replace(",", ".")) / 100;
+                var gm = /espaco\s*(\d+(?:[.,]\d+)?)/.exec(optText);
+                if (gm) slot.gap = parseFloat(gm[1].replace(",", "."));
+                slots[type] = slot;
+                found = true;
+            }
+        }
+        return found ? slots : null;
+    }
+
+    function alignX(item, area, align) {
+        var b = getStableBounds(item);
+        var w = b[2] - b[0];
+        var left;
+        if (align === "left") left = area[0];
+        else if (align === "right") left = area[2] - w;
+        else left = (area[0] + area[2]) / 2 - w / 2;
+        item.translate(left - b[0], 0);
+    }
+
+    function centerYOn(item, refItem) {
+        var b = getStableBounds(item);
+        var r = getStableBounds(refItem);
+        item.translate(0, (r[1] + r[3]) / 2 - (b[1] + b[3]) / 2);
+    }
+
+    function fitNameBlock(block, slot) {
+        var b = getStableBounds(block);
+        var w = b[2] - b[0], h = b[1] - b[3];
+        var aw = slot.bounds[2] - slot.bounds[0], ah = slot.bounds[1] - slot.bounds[3];
+        if (w <= 0 || h <= 0) return;
+        var s = slot.max > 1 ? Math.pow(aw / w, NAME_FIT_EXPONENT) : 1;
+        s = Math.min(s, slot.max, aw / w, ah / h);
+        if (Math.abs(s - 1) < 0.005) return;
+        var p = s * 100;
+        try { block.resize(p, p, true, true, true, true, p, Transformation.TOP); } catch (e) {}
+    }
+
+    function wrapSingleOfferFrame(group) {
+        var gName = "";
+        try { gName = group.name || ""; } catch (e) {}
+        if (gName !== "oferta") return;
+        var frames = [];
+        collectTextFramesRecursive(group, frames);
+        if (frames.length !== 1) return;
+        var text = "";
+        try { text = frames[0].contents || ""; } catch (e2) {}
+        if (/[\u0003\r]/.test(text) || text.indexOf(" ") < 0) return;
+        var cut = balancedBreakIndex(text);
+        if (cut > 0) safeSetTextContents(frames[0], text.substring(0, cut) + FORCED_BREAK + text.substring(cut + 1));
+    }
+
+    function applySlotLayout(dupMap, nameBlock, priceGroup) {
+        var slots = collectSlots(dupMap);
+        if (!slots) return;
+
+        try {
+            if (nameBlock && slots.nome) {
+                fitNameBlock(nameBlock, slots.nome);
+                alignX(nameBlock, slots.nome.bounds, slots.nome.align);
+            }
+            if (priceGroup && slots.preco) {
+                var aw = slots.preco.bounds[2] - slots.preco.bounds[0];
+                // Oferta de uma caixa só que não cabe: quebra em 2 linhas antes de reduzir.
+                if (getStableBounds(priceGroup)[2] - getStableBounds(priceGroup)[0] > aw) wrapSingleOfferFrame(priceGroup);
+                var pb = getStableBounds(priceGroup);
+                var pw = pb[2] - pb[0];
+                if (pw > aw && pw > 0) scaleItemFromTopLeft(priceGroup, aw / pw);
+                alignX(priceGroup, slots.preco.bounds, slots.preco.align);
+                var pb1 = getStableBounds(priceGroup);
+                var ab1 = slots.preco.bounds;
+                priceGroup.translate(0, (ab1[1] + ab1[3]) / 2 - (pb1[1] + pb1[3]) / 2);
+            }
+
+            if (slots.info && nameBlock) {
+                var area = slots.info.bounds;
+                var nb = getStableBounds(nameBlock);
+                var nw = nb[2] - nb[0];
+                var rowW = nw;
+                var pw2 = 0;
+                if (priceGroup) {
+                    var pb2 = getStableBounds(priceGroup);
+                    pw2 = pb2[2] - pb2[0];
+                    rowW += slots.info.gap + pw2;
+                }
+                var aW = area[2] - area[0];
+                if (rowW > aW && rowW > 0) {
+                    // Linha não cabe: reduz nome e preço juntos.
+                    var k = aW / rowW;
+                    scaleItemFromTopLeft(nameBlock, k);
+                    if (priceGroup) scaleItemFromTopLeft(priceGroup, k);
+                    nb = getStableBounds(nameBlock); nw = nb[2] - nb[0];
+                    if (priceGroup) { pb2 = getStableBounds(priceGroup); pw2 = pb2[2] - pb2[0]; }
+                    rowW = nw + (priceGroup ? slots.info.gap * k + pw2 : 0);
+                }
+                var left;
+                if (slots.info.align === "left") left = area[0];
+                else if (slots.info.align === "right") left = area[2] - rowW;
+                else left = (area[0] + area[2]) / 2 - rowW / 2;
+                nameBlock.translate(left - nb[0], 0);
+                if (priceGroup) {
+                    var nb3 = getStableBounds(nameBlock);
+                    var pb3 = getStableBounds(priceGroup);
+                    priceGroup.translate(nb3[2] + (rowW - nw - pw2) - pb3[0], 0);
+                    centerYOn(priceGroup, nameBlock);
+                }
+            }
+        } catch (layoutErr) {}
+
+        for (var key in slots) {
+            if (slots.hasOwnProperty(key)) { try { slots[key].item.remove(); } catch (e) {} }
+        }
+    }
+
+    // Centavos: no CP base o ",00" de cada valor é um texto separado, logo à direita
+    // da tag. Troca esse ",00" pelos centavos do card (",90").
+    function applyCents(group, cents) {
+        var frames = [];
+        collectTextFramesRecursive(group, frames);
+        for (var c = 0; c < CENTS_TAGS.length; c++) {
+            var tag = CENTS_TAGS[c];
+            if (!cents[tag]) continue;
+            for (var i = 0; i < frames.length; i++) {
+                var content = "";
+                try { content = frames[i].contents || ""; } catch (e) {}
+                if (!(normalizeTagValue(content) === normalizeTagValue(tag) || hasTagToken(content, tag))) continue;
+
+                var tb = getStableBounds(frames[i]);
+                var best = null;
+                var bestDist = Infinity;
+                for (var j = 0; j < frames.length; j++) {
+                    if (j === i) continue;
+                    var other = "";
+                    try { other = frames[j].contents || ""; } catch (e2) {}
+                    if (!/^\s*,00/.test(other)) continue;
+                    var ob = getStableBounds(frames[j]);
+                    var midY = (tb[1] + tb[3]) / 2;
+                    if (midY > ob[1] + 2 || midY < ob[3] - 2) continue; // não está na mesma linha
+                    var dist = ob[0] - tb[2];
+                    if (dist < -10) continue; // está à esquerda
+                    if (dist < bestDist) { bestDist = dist; best = frames[j]; }
+                }
+                if (best) {
+                    try { best.contents = best.contents.replace(/,00/, "," + cents[tag]); } catch (e3) {}
+                }
+            }
+        }
     }
 
     // Oferta: as 2 caixas {{V_Oferta_TXT}} viram linha 1 (de cima) e linha 2.
@@ -2410,14 +3045,18 @@
 
     // Marcadores de benefício: preenche de cima para baixo e remove as linhas que sobram
     // (texto + ponto + pílula). Lista vazia remove todos.
+    // Retorna quantos marcadores de benefício o CP base tem nesta prancheta.
+    // Marcador com quebra de linha no CP base ("Para que busca<quebra>conforto"):
+    // o benefício sem "\n" é quebrado em 2 linhas equilibradas.
     function applyBenefits(frames, list) {
         var placeholders = [];
         for (var i = 0; i < frames.length; i++) {
             var content = "";
             try { content = frames[i].contents || ""; } catch (e) {}
-            if (trimText(content) === BENEFIT_PLACEHOLDER) placeholders.push(frames[i]);
+            var flat = String(content).replace(/[\u0003\r\n]+/g, " ").replace(/\s+/g, " ");
+            if (trimText(flat) === BENEFIT_PLACEHOLDER) placeholders.push(frames[i]);
         }
-        if (placeholders.length === 0) return;
+        if (placeholders.length === 0) return 0;
 
         placeholders.sort(function (a, b) { return getStableBounds(b)[1] - getStableBounds(a)[1]; });
 
@@ -2425,7 +3064,10 @@
         for (var k = 0; k < placeholders.length; k++) {
             var tf = placeholders[k];
             if (k < list.length) {
-                safeSetTextContents(tf, list[k]);
+                var phContent = "";
+                try { phContent = tf.contents || ""; } catch (eC) {}
+                var twoLines = /[\u0003\r]/.test(phContent);
+                safeSetTextContents(tf, parseMarkedText(list[k], twoLines).text);
                 continue;
             }
             var parent = null;
@@ -2463,6 +3105,7 @@
                 grp = next;
             }
         }
+        return placeholders.length;
     }
 
     // Descarta frames que foram removidos (acesso a item removido lança erro).
@@ -2479,7 +3122,8 @@
     // =========================
     function prepareSelectedItems(selectedItems) {
         for (var i = 0; i < selectedItems.length; i++) {
-            selectedItems[i].productName = selectedItems[i].productNameOverride || stripVariantFromName(getBaseName(selectedItems[i].fileRef));
+            selectedItems[i].productName = selectedItems[i].productNameOverride ||
+                (selectedItems[i].fileRef ? stripVariantFromName(getBaseName(selectedItems[i].fileRef)) : "Produto " + (i + 1));
             selectedItems[i].storyRect = getTargetArtboardRect(i, "story");
             selectedItems[i].feedRect = getTargetArtboardRect(i, "feed");
         }
@@ -3227,6 +3871,24 @@
     // =========================
     // IMAGEM DO PRODUTO + MÁSCARA
     // =========================
+    // Quadro verde neon do tamanho da prancheta, no lugar da foto que falta.
+    function placeMissingPhotoBox(doc, layer, artRect, groupName) {
+        var left = artRect[0];
+        var top = artRect[1];
+        var width = Math.abs(artRect[2] - artRect[0]);
+        var height = Math.abs(artRect[1] - artRect[3]);
+        doc.activeLayer = layer;
+        var box = layer.pathItems.rectangle(top, left, width, height);
+        var color = new RGBColor();
+        color.red = MISSING_PHOTO_RGB[0];
+        color.green = MISSING_PHOTO_RGB[1];
+        color.blue = MISSING_PHOTO_RGB[2];
+        box.filled = true;
+        box.fillColor = color;
+        box.stroked = false;
+        box.name = limitText("SEM FOTO - " + groupName, 90);
+    }
+
     function placeImageWithClipping(doc, layer, imageFile, artRect, groupName) {
         var left = artRect[0];
         var top = artRect[1];

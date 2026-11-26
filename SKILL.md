@@ -1,24 +1,62 @@
 ---
 name: campanha-lote-clickup
-description: Gera campanhas de produto no Illustrator a partir de IDs de cards de campanha do ClickUp (subtarefas "CRIATIVO NN - [Produto]") - monta o JSON de lote do gerador_campanhas_v3.jsx com prévia para aprovação, localiza a pasta de cada cliente no Google Drive e roda a geração via PowerShell, devolvendo pendências ou arquivos gerados. Usar quando o usuário mandar IDs de cards de campanha/CP Meta Ads para produzir as artes, pedir "gera o lote", "monta o JSON da campanha" ou "roda as campanhas no Illustrator".
+description: Gera campanhas de produto no Illustrator a partir de IDs de cards de campanha do ClickUp (subtarefas "CRIATIVO NN - [Produto]") - aceita cards de campanhas diferentes no mesmo lote (cada campanha com seu CP base e sua pasta de fotos, cadastrados em campanhas.md), monta o JSON de lote do gerador_campanhas_v3.jsx com prévia para aprovação, localiza a pasta de cada cliente no Google Drive e roda a geração (PowerShell no Windows, AppleScript no macOS), devolvendo pendências ou arquivos gerados. Usar quando o usuário mandar IDs de cards de campanha/CP Meta Ads para produzir as artes, pedir "gera o lote", "monta o JSON da campanha" ou "roda as campanhas no Illustrator".
 ---
 
-# Campanhas em lote: ClickUp → JSON → Illustrator (via PowerShell)
+# Campanhas em lote: ClickUp → JSON → Illustrator (Windows e macOS)
 
-Fluxo completo: IDs dos cards → leitura no ClickUp → produtos + pasta do Drive de cada cliente → prévia para aprovação → `lote - <Campanha>.json` → `rodar_lote.ps1` gera os `.ai` sem janelas → relatar o resultado.
+Fluxo completo: IDs dos cards → leitura no ClickUp → campanha de cada card (CP base + fotos via `campanhas.md`) → produtos + pasta do Drive de cada cliente → prévia para aprovação → `lote - <data>.json` → `rodar_lote.ps1` (Windows) ou `rodar_lote.sh` (macOS) gera os `.ai` sem janelas → relatar o resultado.
+
+Um mesmo lote pode misturar campanhas: ex. cliente A na Prorrogação Black, cliente B no Natal, cliente C na Le Creuset. Cada cliente sai com o CP base e as fotos da sua campanha, salvo na pasta daquela campanha no Drive.
+
+## 0. Atualizar a skill e ver o sistema
+
+Antes de tudo, atualizar a skill em silêncio: `git -C "<pasta da skill>" pull --ff-only -q`. Se falhar (sem internet, alteração local), seguir com a versão atual e avisar o usuário em uma linha. Se atualizou, reler este `SKILL.md`.
+
+
+Ver o `Platform` do ambiente (`win32` = Windows, `darwin` = macOS) e usar em todo o fluxo os comandos e caminhos do sistema certo:
+
+| | Windows | macOS |
+|---|---|---|
+| Executor | `rodar_lote.ps1` (PowerShell + COM) | `rodar_lote.sh` (bash + AppleScript) |
+| Raiz do Drive | `G:\Meu Drive` | `~/Library/CloudStorage/GoogleDrive-<conta>/Meu Drive` |
+| Listar pastas | `Get-ChildItem -Directory` | `ls -1` |
+| Illustrator travado? | `Get-Process Illustrator` | `pgrep` + `osascript` (ver seção 7) |
+
+O `gerador_campanhas_v3.jsx` é o mesmo nos dois sistemas.
 
 Cada card vira um cliente no JSON; cada subtarefa `CRIATIVO NN` vira um produto.
 
 Princípio: **nunca inventar dado comercial nem caminho**. O que o briefing não disser e não tiver regra padrão abaixo vira `"PENDENTE: <motivo / opções>"` — o script pula o cliente com PENDENTE e gera os demais.
 
-## 1. Pasta de trabalho
+## 1. Onde ficam as coisas
 
-A pasta de trabalho contém `gerador_campanhas_v3.jsx`, `rodar_lote.ps1` e a pasta de fotos (ex.: `Fotos - Fundo loja`) com o `CP base*.ai`.
+O código fica na pasta desta skill (a que contém este `SKILL.md`; se ela for um atalho em `~/.claude/skills`, usar o destino real). Os materiais ficam no **Google Drive**, compartilhados entre todos os computadores e designers.
 
-- Usar o diretório atual se tiver esses arquivos; senão perguntar o caminho.
-- Os dois scripts são versionados na pasta `scripts/` desta skill. Se a pasta de trabalho tiver as fotos mas não os scripts (máquina nova), copiá-los de lá. Ao alterar um script na pasta de trabalho, copiar de volta para `scripts/` e avisar o usuário para fazer commit.
-- Listar as fotos disponíveis (`.png/.jpg/.jpeg/.tif/.psd/.webp`, exceto o CP base). Nomes: `<Modelo> <Tamanho>.png`, `<Modelo>.png` (sofás) e variantes `<Modelo> AZUL.png`.
-- Mais de um `CP base*`: perguntar qual usar.
+```
+<pasta da skill>/                 ← git (só texto)
+├── SKILL.md, README.md
+├── scripts/                      ← gerador_campanhas_v3.jsx, rodar_lote.ps1, rodar_lote.sh
+├── lote - <data>.json            ← lotes gerados (fora do git)
+└── relatorio_lote.txt            ← log acumulado (fora do git)
+
+<raiz Clientes>/_Materiais Gerais - Anjos/campanhas base/      ← Drive (pasta "Campanhas base")
+├── _Skill campanhas em lote/campanhas.md   ← cadastro: campanha → CP base + fotos
+├── Campanha base - Natal/
+│   ├── CP base - Renove o conforto (skill).ai
+│   └── Fotos - Natal/
+└── Campanha base - Black Anjos/ ...
+```
+
+- **Raiz Clientes**: localizar como na seção 4. **Campanhas base** = `<raiz Clientes>/_Materiais Gerais - Anjos/campanhas base`. Não existe → parar e perguntar.
+- Ler `<Campanhas base>/_Skill campanhas em lote/campanhas.md`. Cada bloco `## <Campanha>` tem: **Nomes no ClickUp** (apelidos, separados por vírgula), **CP base** e **Fotos** (caminhos relativos a Campanhas base) e, opcional, **Nome no arquivo**. Blocos dentro de `<!-- -->` são exemplos — ignorar.
+- Conferir que o CP base e a pasta de fotos de cada campanha usada existem. Arquivo que não existe (renomeado ou movido no Drive) → PENDENTE na prévia, com os `.ai`/pastas parecidos como opções.
+- Listar as fotos da pasta de cada campanha usada (`.png/.jpg/.jpeg/.tif/.psd/.webp`, só o primeiro nível). Nomes: `<Modelo> <Tamanho>.png`, `<Modelo>.png` (sofás) e variantes `<Modelo> AZUL.png`.
+- CP base preparado para o script leva `(skill)` no nome e fica ao lado do original usado à mão.
+- Os scripts ficam só em `scripts/` (versionados no git). Ao alterá-los, avisar o usuário para fazer commit.
+
+### Cadastrar campanha nova
+Se um card trouxer uma campanha que não está em `campanhas.md`, ela vira PENDENTE na prévia. Perguntar ao usuário qual CP base e qual pasta de fotos usar (listar os `.ai` com "CP base" no nome e as pastas de fotos dentro de Campanhas base), ou se é um apelido de uma campanha já cadastrada. Com a resposta, **acrescentar o bloco (ou o apelido) em `campanhas.md` no Drive** para não perguntar de novo (vale para todos os computadores). Se o CP base ainda não existir, a campanha fica pendente — nunca usar o CP base de outra campanha sem o usuário mandar.
 
 ## 2. Ler os cards no ClickUp
 
@@ -26,27 +64,42 @@ Para cada ID (consultas independentes em paralelo):
 
 1. `clickup_get_task` com `include: ["description", "subtasks"]`.
 2. **Cliente** = nome da lista do card (`list.name`, ex.: "Anjos Caxias do Sul").
-3. **Campanha** = texto entre colchetes no nome do card que não seja período nem formato. Ex.: `📢 Anjos Caxias - CP MetaAds 🔵 01 Dez - [ 01 dez - 10 dez] [Prorrogação Black] - [Estático]` → `Prorrogação Black`. Todos os cards do lote devem ter a mesma campanha; se divergirem, perguntar.
+3. **Campanha** = texto entre colchetes no nome do card que não seja período nem formato. Ex.: `📢 Anjos Caxias - CP MetaAds 🔵 01 Dez - [ 01 dez - 10 dez] [Prorrogação Black] - [Estático]` → `Prorrogação Black`. Cada card pode ter uma campanha diferente.
+   - Casar com os **Nomes no ClickUp** de `campanhas.md` (sem maiúsculas/acentos/espaços extras). Achou → usar o CP base e as fotos daquele bloco. Não achou ou achou mais de um → PENDENTE (ver "Cadastrar campanha nova").
+   - Nome da campanha no arquivo e na pasta do Drive = **Nome no arquivo** do bloco, se houver; senão, o texto do card.
 4. **Mês da campanha** = mês do `start_date` do card (antes de converter, chamar `clickup_get_user` e usar o fuso do `current_time`); sem `start_date`, usar o período no nome (`[01 dez - 10 dez]`).
-5. Subtarefas válidas: `CRIATIVO NN - [Produto]` (tolerar espaços e hífen colado). Ordenar por `NN`. Não filtrar por status (vêm como "templates").
+5. Subtarefas válidas: `CRIATIVO NN - [Produto]` (tolerar espaços e hífen colado). Ordenar por `NN`. Não filtrar por status (vêm como "templates"). Ignorar as que começam com `[Fora da campanha]`.
 6. Buscar cada subtarefa com `clickup_get_task` + `include: ["description"]` (em paralelo). O briefing está em `markdown_description`, seção "Briefing design". Remover Markdown (`**`, `\[ \]`).
 
 ## 3. Converter cada CRIATIVO em produto
 
-Usar **Produto**, **Benefícios** e **Preço** ou **Atrativo de oferta**. Ignorar Selo, CTA, letras miúdas e complementos entre parênteses no produto (ajuste manual do design), mas citá-los na prévia quando diferirem entre criativos (ex.: validade 18/12 num e 10/12 nos outros).
+Usar **Produto**, **Frase destaque**, **Benefícios** e **Preço** ou **Atrativo de oferta**. Ignorar Selo, CTA, letras miúdas e complementos entre parênteses no produto (ajuste manual do design), mas citá-los na prévia quando diferirem entre criativos (ex.: validade 18/12 num e 10/12 nos outros).
 
 ### nome
 Sempre preencher `"nome"` com o modelo, sem tamanho/cor/complemento: "Colchão Genialle + Box" → `"Genialle"`; "Colchão + Box Benvenutti + Box Baú" → `"Benvenutti"`. (Sem `nome`, o script usa o arquivo da foto sem "Casal/Queen/AZUL/BOX BAU".)
 
 ### beneficios
-Lista com os itens de **Benefícios**/**Beneficio** do card separados por `|` (ex.: `["Molas ensacadas", "Conforto na medida certa"]`). O CP base tem 3 marcadores: preenche de cima para baixo e remove os que sobram. Card sem benefícios → omitir o campo (todos os marcadores são removidos).
+Lista com os itens de **Benefícios**/**Beneficio** do card separados por `|` (ex.: `["Molas ensacadas", "Conforto na medida certa"]`). O CP base tem de 1 a 3 marcadores: preenche de cima para baixo e remove os que sobram. Card sem benefícios → omitir o campo (todos os marcadores são removidos). Quebra de linha dentro de um benefício: `\n` (se o marcador do CP base já tem 2 linhas, o script quebra sozinho). Se o CP base não tiver marcadores, o relatório avisa.
+
+### frase
+Texto de **Frase destaque** do card, copiado como está (só remover Markdown). Marcar entre `*` o trecho de destaque, que sai na versão Bold da fonte do CP base. Padrão do design: destacar o benefício principal, 2 a 4 palavras, normalmente o fim da frase. Exemplos aprovados pelo designer:
+- `Mais *espaço e praticidade* para receber bem.`
+- `Muda suas noites e *transforme suas manhãs.*`
+- `Mais espaço para *relaxar e aproveitar* seus momentos de descanso.`
+- `Para fãs de *qualidade & conforto*`
+- `Você merece começar o ano *dormindo bem!*`
+
+O script quebra a frase em 2 linhas equilibradas. Para forçar outra quebra, usar `\n`. Card sem frase → omitir o campo (a caixa `{{frase}}` é removida e o relatório avisa). Mostrar a frase com o destaque na prévia, para o usuário confirmar.
 
 ### categoria (exatamente uma)
-`Conjunto`, `Conjunto Box`, `Colchão`, `Sofá`, `Sofá-cama`, `Sofá Retrátil`, `Sofá Retrátil e Reclinável`
+`Conjunto`, `Conjunto Box`, `Colchão`, `Colchão + Box`, `Cama`, `Sofá`, `Sofá-cama`, `Sofá Retrátil`, `Sofá Retrátil e Reclinável`
 
-- "Colchão + Box", "Colchão X + Box", "Box" → `Conjunto Box`
+**Seguir o termo do card — não converter um no outro:**
+- "Colchão + Box" / "Colchão X + Box" / "Colchão + Box X" → `Colchão + Box`
+- "Conjunto Box" / "Conjunto X Box" → `Conjunto Box`
 - "Conjunto X" → `Conjunto`
 - "Colchão X" sem box → `Colchão`
+- "Cama X" (cama, base com cabeceira) → `Cama`
 - Sofás: variante citada (cama, retrátil, reclinável); sem variante → `Sofá`
 - Não mapeável → PENDENTE
 
@@ -60,17 +113,19 @@ Lista com os itens de **Benefícios**/**Beneficio** do card separados por `|` (e
 - Não preencher `medida` em tamanho padrão — o script aplica a tabela.
 
 ### foto
-1. `<Modelo> <Tamanho>.png` (ex.: `Differenza Casal.png`).
-2. Se não existir: `<Modelo>.png` (ex.: `Milano.png`).
-3. Variantes `AZUL` só se o briefing pedir.
-4. Comparar sem maiúsculas/acentos. Sem correspondência única → `"PENDENTE: opções A | B | C"`.
+Procurar só na pasta de fotos **da campanha do card**. Os arquivos podem ter sufixo da campanha (ex.: `Genialle Casal - Natal v2.png`) — comparar só o começo `<Modelo> <Tamanho>`.
+1. `<Modelo> <Tamanho>` (ex.: `Differenza Casal.png`).
+2. Se não existir: `<Modelo>` (ex.: `Milano.png`, `Milano - Natal.png`).
+3. Variantes (`AZUL`, `aberto/fechado`, `Baú`, `3 lugares`) só se o briefing pedir; se pedir, usar a variante (ex.: sofá-cama "fechado como imagem principal" → `Lungo fechado`).
+4. Comparar sem maiúsculas/acentos. Mais de uma opção igualmente boa → escolher a mais simples e citar as outras na prévia.
+5. **Sem foto do modelo → `"foto": ""`.** O script gera o produto com um **quadro verde neon do tamanho da prancheta** no lugar da foto (camada `fotos`, nome `SEM FOTO - ...`) e avisa no relatório. Não usar PENDENTE para foto — a campanha sai mesmo assim.
 
 ### preco + valores
-Formato obrigatório (o script valida):
-- `V_DE`, `V_parcela`, `V_total`, `V_%`: **só número inteiro** (R$ 3.399,00 → `"3399"`).
+Formato (o script valida):
+- `V_DE`, `V_parcela`, `V_total`: número **com os centavos do card** quando não forem zero (R$ 3.399,00 → `"3399"`; R$ 199,90 → `"199,90"`). O script põe o inteiro na tag e troca o `,00` fixo do CP base pelos centavos. Nunca arredondar.
+- `V_%`: só número inteiro.
 - `V_X`: número + X maiúsculo (`"18X"`).
 - `V_Oferta_TXT`: texto do briefing, literal (sem corrigir ortografia). O script quebra em 2 linhas no `|` (ou na primeira vírgula: "Conforto de hotel, / Preço de Black!"); sem separador fica 1 linha.
-- Centavos diferentes de zero (ex.: R$ 249,90) → PENDENTE. Nunca arredondar.
 
 | Briefing | preco | campos |
 |---|---|---|
@@ -78,70 +133,111 @@ Formato obrigatório (o script valida):
 | "De X por R$Z à vista" (sem parcelas) | `a_vista` | V_DE=X, V_total=Z |
 | "Até N% off" / "N% off" | `desconto` | V_%=N |
 | Só texto de oferta ("Últimas peças \| Preço de Black") | `oferta` | V_Oferta_TXT=texto |
+| "De X por: NX R$Y" (sem à vista) | `parcelado` | V_DE=X, V_X=NX, V_parcela=Y, **V_total=""** |
+| Sem preço nem texto de oferta no card | `sem_preco` | nenhum (sem bloco de preço na arte) |
 
-Faltou campo exigido pelo grupo (ex.: parcelado sem "De") → PENDENTE naquele campo. Preço com parcelas **e** texto de oferta: usar o grupo do preço e citar o texto na prévia.
+- Campo do grupo que o card não informa → deixar `""` (não PENDENTE). O script gera com o campo **em branco** para o usuário editar à mão e lista em `AVISOS`. Citar na prévia.
+- Card sem preço nenhum é escolha estética da campanha → `sem_preco`, sem perguntar.
+- Preço com parcelas **e** texto de oferta: usar o grupo do preço e citar o texto na prévia.
 
 ## 4. Pasta de salvamento no Google Drive
 
 Cada cliente recebe `"pasta_saida"` com o caminho absoluto da pasta da campanha:
 
 ```
-G:\Meu Drive\Ampliar Digital\02. Clientes\<pasta do cliente>\02 - Editáveis Campanhas\<MM> <MMM> - <Campanha>
+<raiz Clientes>/<pasta do cliente>/02 - Editáveis Campanhas/<MM> <MMM> - <Campanha>
 ```
-Ex.: `G:\Meu Drive\Ampliar Digital\02. Clientes\Anjos - Caxias do Sul RS\02 - Editáveis Campanhas\12 DEZ - Prorrogação Black`
 
-1. **Pasta do cliente**: listar `G:\Meu Drive\Ampliar Digital\02. Clientes` (PowerShell `Get-ChildItem -Directory`) e casar com o nome da lista do ClickUp ignorando maiúsculas, acentos, hífens, a palavra da marca e sufixos de UF/região ("Anjos Caxias do Sul" ↔ "Anjos - Caxias do Sul RS"). Nenhuma ou mais de uma correspondência → `"pasta_saida": "PENDENTE: opções ..."`.
+**Raiz Clientes** (pasta `02. Clientes`):
+- Windows: `G:\Meu Drive\Ampliar Digital\02. Clientes`
+- macOS: não fixar o caminho; localizar com
+  `find ~/Library/CloudStorage/GoogleDrive-*/"Meu Drive" -maxdepth 2 -type d -name "02. Clientes" -path "*Ampliar Digital*"`
+  - Ignorar pastas `GoogleDrive-<conta> (dd-mm-aaaa hh:mm)` (montagens antigas, desatualizadas) e qualquer `.Encrypted`.
+  - No Mac a pasta pode se chamar `Ampliar Digital ` **com espaço no final** — usar o caminho exatamente como o `find` devolveu.
+  - Nenhuma ou mais de uma raiz válida → perguntar ao usuário.
+
+Ex. Windows: `G:/Meu Drive/Ampliar Digital/02. Clientes/Anjos - Caxias do Sul RS/02 - Editáveis Campanhas/12 DEZ - Prorrogação Black`
+Ex. macOS: `/Users/<usuário>/Library/CloudStorage/GoogleDrive-<conta>/Meu Drive/Ampliar Digital /02. Clientes/Anjos - Caxias do Sul RS/02 - Editáveis Campanhas/12 DEZ - Prorrogação Black`
+
+No JSON, usar sempre `/` como separador.
+
+1. **Pasta do cliente**: listar a raiz Clientes (Windows `Get-ChildItem -Directory`; macOS `ls -1`) e casar com o nome da lista do ClickUp ignorando maiúsculas, acentos (no macOS os nomes vêm em Unicode decomposto/NFD — normalizar antes de comparar), hífens, a palavra da marca e sufixos de UF/região ("Anjos Caxias do Sul" ↔ "Anjos - Caxias do Sul RS"). Nenhuma ou mais de uma correspondência → `"pasta_saida": "PENDENTE: opções ..."`.
 2. **`02 - Editáveis Campanhas`** precisa existir dentro do cliente; se não existir → PENDENTE.
 3. **Pasta da campanha**: `MM` com dois dígitos + mês abreviado em maiúsculas (`JAN FEV MAR ABR MAI JUN JUL AGO SET OUT NOV DEZ`) + ` - ` + campanha. Se já existir uma pasta com o mesmo prefixo `MM MMM` e nome equivalente (diferença só de caixa/acento), usar a existente. Se não existir, o script cria esse último nível.
 4. Nome do arquivo: `<Cliente> - <Campanha>.ai` (cliente explícito). Se já houver `.ai` com esse nome na pasta, o script **não sobrescreve** (aparece em "JÁ EXISTIAM").
 
 ## 5. Prévia para aprovação (obrigatória)
 
-Por cliente: pasta de destino + tabela `NN | foto | nome | categoria | tamanho (ou "sem") | benefícios | preço | valores`, marcando **PENDENTE** (com opções) e ajustes manuais (validade, "Até", selos). Perguntar se aprova ou o que corrigir; resolver PENDENTEs com as respostas. Só gravar após aprovação explícita.
+Agrupar por campanha (nome, CP base e pasta de fotos no título do grupo). Por cliente: pasta de destino + cidade + tabela `NN | foto | nome | categoria | tamanho (ou "sem") | frase (com *destaque*) | benefícios | preço | valores`, marcando **PENDENTE** (com opções) e ajustes manuais (validade, "Até", selos). Perguntar se aprova ou o que corrigir; resolver PENDENTEs com as respostas. Só gravar após aprovação explícita.
 
 ## 6. Gravar o JSON
 
-`lote - <Campanha>.json` na pasta de trabalho (perguntar antes de sobrescrever). Caminhos de fotos/base relativos à pasta do JSON; `pasta_saida` absoluto por cliente:
+`lote - <AAAA-MM-DD HHhMM>.json` na pasta da skill. **Campanha, CP base e fotos vão em cada cliente** (é isso que permite misturar campanhas). `arquivo_base`, `pasta_fotos` e `pasta_saida` com caminho **absoluto** (Campanhas base + caminho do `campanhas.md`):
 
 ```json
 {
-  "campanha": "Prorrogação Black",
-  "pasta_fotos": "Fotos - Fundo loja",
-  "arquivo_base": "Fotos - Fundo loja/CP base - Ressaca prorrogação.ai",
   "clientes": [
     {
       "cliente": "Anjos Caxias do Sul",
       "clickup_id": "17txe6ym9ap",
+      "campanha": "Prorrogação Black",
+      "cidade": "Caxias do Sul",
+      "arquivo_base": "G:/Meu Drive/Ampliar Digital/02. Clientes/_Materiais Gerais - Anjos/campanhas base/Campanha base - Black Anjos/CP base.ai",
+      "pasta_fotos": "G:/Meu Drive/Ampliar Digital/02. Clientes/_Materiais Gerais - Anjos/campanhas base/Campanha base - Black Anjos/Fotos - Fundo loja",
       "pasta_saida": "G:/Meu Drive/Ampliar Digital/02. Clientes/Anjos - Caxias do Sul RS/02 - Editáveis Campanhas/12 DEZ - Prorrogação Black",
       "produtos": [
         { "foto": "Differenza Casal.png", "nome": "Differenza", "categoria": "Conjunto Box", "tamanho": "Casal",
-          "beneficios": ["Molas ensacadas", "Conforto na medida certa"], "preco": "parcelado",
+          "beneficios": ["Molas ensacadas", "Conforto na medida certa"], "frase": "Mais *conforto* para suas noites.", "preco": "parcelado",
           "V_DE": "3399", "V_X": "18X", "V_parcela": "115", "V_total": "2070", "V_%": "", "V_Oferta_TXT": "" },
         { "foto": "Genialle Casal.png", "nome": "Genialle", "categoria": "Conjunto Box", "preco": "oferta",
           "V_Oferta_TXT": "Ultimas peças | Preço de Black" }
       ]
+    },
+    {
+      "cliente": "Anjos Itu",
+      "clickup_id": "86abc456",
+      "campanha": "Natal",
+      "arquivo_base": "G:/Meu Drive/Ampliar Digital/02. Clientes/_Materiais Gerais - Anjos/campanhas base/Campanha base - Natal/CP base - Natal (skill).ai",
+      "pasta_fotos": "G:/Meu Drive/Ampliar Digital/02. Clientes/_Materiais Gerais - Anjos/campanhas base/Campanha base - Natal/Fotos - Natal",
+      "pasta_saida": "G:/Meu Drive/Ampliar Digital/02. Clientes/Anjos - Itu SP/02 - Editáveis Campanhas/12 DEZ - Natal",
+      "produtos": [ ... ]
     }
   ]
 }
 ```
 
+- Cliente com campanha PENDENTE: `"arquivo_base": "PENDENTE: campanha X não cadastrada"` — o script pula só esse cliente.
+- `campanha`, `arquivo_base` e `pasta_fotos` também podem ir no topo do JSON como padrão para todos (o do cliente prevalece).
+
+- No macOS, `pasta_saida` começa com `/Users/<usuário>/Library/CloudStorage/GoogleDrive-<conta>/Meu Drive/...` (seção 4).
 - `cliente` é obrigatório (vai no nome do arquivo).
+- `cidade` = nome da loja como aparece no logo, sem "Anjos" e sem UF (lista "Anjos Campo Grande" → `"Campo Grande"`; "Anjos Ecoville" → `"Ecoville"`). O script troca o texto "Cidade" dentro do símbolo `city` uma vez só: todas as instâncias continuam símbolo e o texto é reduzido se não couber na pílula. Sem `cidade`, o símbolo fica como está.
 - Dois cards do mesmo cliente: `"arquivo"` distinto em cada um.
 - Mais de 8 produtos num cliente: o script divide em partes.
 - Validar o JSON (parse) depois de gravar.
 
-## 7. Gerar via PowerShell e relatar
+## 7. Gerar e relatar
 
-Logo após gravar o JSON aprovado, rodar (o Illustrator abre sozinho se estiver fechado; timeout longo, ~40 s por campanha):
+Logo após gravar o JSON aprovado, rodar o executor do sistema (o Illustrator abre sozinho se estiver fechado; timeout longo, ~40 s por campanha):
 
+Windows:
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File ".\rodar_lote.ps1" -Json ".\lote - <Campanha>.json"
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\rodar_lote.ps1" -Json ".\lote - <data>.json"
 ```
+
+macOS:
+```bash
+bash ./scripts/rodar_lote.sh --json "./lote - <data>.json"
+```
+(rodar a partir da pasta da skill). Cada CP base é aberto uma vez só e gera todos os clientes da sua campanha.
+Na primeira execução o macOS pode pedir permissão para o Terminal controlar o Adobe Illustrator (Ajustes do Sistema → Privacidade e Segurança → Automação). Erro `-1743` ("Not authorized to send Apple events") = pedir ao usuário para liberar ali e rodar de novo.
 
 O modo automático gera as campanhas **uma de cada vez** (gera → salva → fecha → próxima), sem janelas, e devolve:
 
 - `STATUS:` OK / PARCIAL / PENDÊNCIAS / NADA A FAZER
-- `GERADAS` — cliente e caminho do `.ai`
+- `Campanha: ... | CP base: ... | Fotos: ...` — uma linha por campanha do lote
+- `GERADAS` — cliente, `[campanha]` e caminho do `.ai`
+- `AVISOS` — produtos SEM FOTO (quadro verde) e campos de preço em branco
 - `PENDÊNCIAS - NÃO GERADAS` — por cliente, o que impede a geração
 - `ERROS NA GERAÇÃO` — falhas do Illustrator
 - `JÁ EXISTIAM - NÃO REFEITAS`
@@ -149,7 +245,10 @@ O modo automático gera as campanhas **uma de cada vez** (gera → salva → fec
 Relatar ao usuário exatamente isso: pendências que impedem a geração (de um cliente ou de todos) ou o aviso de arquivos gerados, com os caminhos. Para resolver uma pendência: corrigir o JSON e rodar de novo (só o que falta é gerado). Para refazer uma campanha: apagar o `.ai` dela e rodar de novo.
 
 Antes de rodar, conferir que o Illustrator responde:
-`Get-Process Illustrator | Select-Object Responding, WorkingSet64` — se o processo existir com memória ~0 ou `Responding = False`, ele travou: pedir ao usuário para fechar/reabrir o Illustrator antes de seguir (não matar o processo sem avisar).
+- Windows: `Get-Process Illustrator | Select-Object Responding, WorkingSet64` — processo com memória ~0 ou `Responding = False` = travado.
+- macOS: se `pgrep -l "Adobe Illustrator"` mostrar o processo, testar `osascript -e 'with timeout of 15 seconds' -e 'tell application id "com.adobe.illustrator" to get version' -e 'end timeout'` — erro de timeout (`-1712`) = travado.
+
+Se travou: pedir ao usuário para fechar/reabrir o Illustrator antes de seguir (não matar o processo sem avisar).
 
 Observações:
 - Log acumulado em `relatorio_lote.txt` ao lado do JSON.

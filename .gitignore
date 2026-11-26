@@ -7,3 +7,11 @@ relatorio_lote.txt
 *.jpeg
 *.psd
 *.tif
+
+# macOS
+.DS_Store
+
+# Arquivos de cada equipe (CP base e fotos)
+Campanhas base/
+Fotos/
+campanhas.md
