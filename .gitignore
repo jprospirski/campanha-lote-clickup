@@ -1,0 +1,9 @@
+# Dados de campanha e saídas não entram no repositório
+lote - *.json
+relatorio_lote.txt
+*.ai
+*.png
+*.jpg
+*.jpeg
+*.psd
+*.tif
