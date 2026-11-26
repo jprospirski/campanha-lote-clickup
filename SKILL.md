@@ -73,13 +73,13 @@ Para cada ID (consultas independentes em paralelo):
 
 ## 3. Converter cada CRIATIVO em produto
 
-Usar **Produto**, **Frase destaque**, **Benefícios** e **Preço** ou **Atrativo de oferta**. Ignorar Selo, CTA, letras miúdas e complementos entre parênteses no produto (ajuste manual do design), mas citá-los na prévia quando diferirem entre criativos (ex.: validade 18/12 num e 10/12 nos outros).
+Usar **Produto**, **Frase destaque**, **Benefícios**, **Preço** ou **Atrativo de oferta**, **Selo**, **CTA** e **Letras miúdas**. Ignorar complementos entre parênteses no produto (ajuste manual do design), mas citá-los na prévia.
 
 ### nome
 Sempre preencher `"nome"` com o modelo, sem tamanho/cor/complemento: "Colchão Genialle + Box" → `"Genialle"`; "Colchão + Box Benvenutti + Box Baú" → `"Benvenutti"`. (Sem `nome`, o script usa o arquivo da foto sem "Casal/Queen/AZUL/BOX BAU".)
 
 ### beneficios
-Lista com os itens de **Benefícios**/**Beneficio** do card separados por `|` (ex.: `["Molas ensacadas", "Conforto na medida certa"]`). O CP base tem de 1 a 3 marcadores: preenche de cima para baixo e remove os que sobram. Card sem benefícios → omitir o campo (todos os marcadores são removidos). Quebra de linha dentro de um benefício: `\n` (se o marcador do CP base já tem 2 linhas, o script quebra sozinho). Se o CP base não tiver marcadores, o relatório avisa.
+Lista com os itens de **Benefícios**/**Beneficio** do card separados por `|` (ex.: `["Molas ensacadas", "Conforto na medida certa"]`). O CP base tem de 1 a 3 marcadores: preenche de cima para baixo e remove os que sobram. Card sem benefícios → omitir o campo (todos os marcadores são removidos). Destaque como na frase: a palavra-chave do benefício entre `*` sai em Black (padrão do design: `"Alto *suporte*"`, `"Conforto *surpreendente*"`). Quebra de linha dentro de um benefício: `\n` (se o marcador do CP base já tem 2 linhas, o script quebra sozinho). Se o CP base não tiver marcadores, o relatório avisa.
 
 ### frase
 Texto de **Frase destaque** do card, copiado como está (só remover Markdown). Marcar entre `*` o trecho de destaque, que sai na versão Bold da fonte do CP base. Padrão do design: destacar o benefício principal, 2 a 4 palavras, normalmente o fim da frase. Exemplos aprovados pelo designer:
@@ -108,7 +108,8 @@ O script quebra a frase em 2 linhas equilibradas. Para forçar outra quebra, usa
 
 - Usar o tamanho citado (ex.: "(casal 1,38 x 1,88)" → `Casal`).
 - **Sem tamanho no briefing → NÃO preencher tamanho.** O padrão Casal vale **só para a escolha da foto** (`<Modelo> Casal.png`, a imagem mais convencional). Escrever "Casal" na arte sem estar no card cria uma informação falsa que passa despercebida na auditoria humana.
-- Sem tamanho → **omitir `tamanho` e `medida`** do JSON: o script remove o bloco "Tamanho:" da arte.
+- Sem tamanho → **omitir `tamanho` e `medida`** do JSON: o script remove a linha de tamanho, a faixa dourada (`faixa_tamanho`) e centraliza o nome no cartão.
+- Card que vale para **todos os tamanhos** ("todos os tamanhos", "linha completa") → `"tamanho": "Todos"`: a linha vira "Todos os tamanhos". Conjunto/colchão sem tamanho no card: perguntar na prévia se usa "Todos os tamanhos" ou deixa sem.
 - `Neutro` só para sofás **com medida no card** (ex.: "Sofá-Cama Lungo (1,50 m)" → `"tamanho": "Neutro", "medida": "1,50m"`). Sofá sem medida → omitir tamanho (sem bloco), não usar PENDENTE.
 - Não preencher `medida` em tamanho padrão — o script aplica a tabela.
 
@@ -119,6 +120,20 @@ Procurar só na pasta de fotos **da campanha do card**. Os arquivos podem ter su
 3. Variantes (`AZUL`, `aberto/fechado`, `Baú`, `3 lugares`) só se o briefing pedir; se pedir, usar a variante (ex.: sofá-cama "fechado como imagem principal" → `Lungo fechado`).
 4. Comparar sem maiúsculas/acentos. Mais de uma opção igualmente boa → escolher a mais simples e citar as outras na prévia.
 5. **Sem foto do modelo → `"foto": ""`.** O script gera o produto com um **quadro verde neon do tamanho da prancheta** no lugar da foto (camada `fotos`, nome `SEM FOTO - ...`) e avisa no relatório. Não usar PENDENTE para foto — a campanha sai mesmo assim.
+
+### selo
+Texto de **Selo** do card (ex.: `"Linha Ouro"`, `"Linha Diamante"`, `"Entrega em Ecoville e região."`). O script copia o selo do arquivo de selos da campanha (campo **Selos** do `campanhas.md`) e coloca na `area_selo` do CP base (com benefícios, na `area_selo | beneficios`). Antes da prévia, listar os selos disponíveis no arquivo de selos e marcar na prévia **"selo novo — criar à mão"** quando o pedido do card não existir lá (o relatório também avisa). Card sem selo → omitir.
+
+### cta
+Texto de **CTA** do card, com o trecho forte entre `*` (padrão do design: `"*Entre em contato*\ne saiba mais!"`, `"Fale agora pelo *WhatsApp!*"`). Vai no símbolo `WhatsApp` do CP base: ele continua símbolo, a pílula estica ou encolhe com o texto e cada CTA diferente vira uma cópia do símbolo (`WhatsApp 2`...). Se todos os criativos têm o mesmo CTA, colocar uma vez no cliente (`"cta"`); senão, em cada produto.
+
+### letras_miudas
+Texto de **Letras miúdas** do card, com a data de validade entre `*` (sai em Bold): `"Imagem meramente ilustrativa. ... Promoção válida até *31/12/2026*, conforme disponibilidade de produtos e cores."`. Vai no símbolo `letras miudas` (continua símbolo; o corpo diminui se não couber). Igual em todos os criativos → no cliente; diferente (ex.: validade 18/12 num e 10/12 nos outros) → em cada produto.
+
+### enquadramento
+Ler `<Campanhas base>/_Skill campanhas em lote/enquadramento.json`. Se houver entrada para a campanha e o arquivo da foto do produto, copiar para o produto: `"enquadramento": {"story": [x, y, largura], "feed": [x, y, largura]}` (frações da prancheta). O script aplica o zoom e a posição salvos em vez de só centralizar. Na prévia, marcar "enquadramento salvo" nos produtos que usam.
+
+**Gravar enquadramento novo** só a partir de uma campanha **final revisada pelo chefe de design**, e só depois que o usuário confirmar vendo a comparação (miniaturas da versão final). Nunca gravar a partir da primeira correção.
 
 ### preco + valores
 Formato (o script valida):
@@ -168,7 +183,7 @@ No JSON, usar sempre `/` como separador.
 
 ## 5. Prévia para aprovação (obrigatória)
 
-Agrupar por campanha (nome, CP base e pasta de fotos no título do grupo). Por cliente: pasta de destino + cidade + tabela `NN | foto | nome | categoria | tamanho (ou "sem") | frase (com *destaque*) | benefícios | preço | valores`, marcando **PENDENTE** (com opções) e ajustes manuais (validade, "Até", selos). Perguntar se aprova ou o que corrigir; resolver PENDENTEs com as respostas. Só gravar após aprovação explícita.
+Agrupar por campanha (nome, CP base e pasta de fotos no título do grupo). Por cliente: pasta de destino + cidade + CTA e letras miúdas (se iguais para todos) + tabela `NN | foto | nome | categoria | tamanho (ou "sem") | frase (com *destaque*) | benefícios | selo | preço | valores | enquadramento salvo?`, marcando **PENDENTE** (com opções), selos que não existem no arquivo de selos e ajustes manuais ("Até", layouts especiais). Perguntar se aprova ou o que corrigir; resolver PENDENTEs com as respostas. Só gravar após aprovação explícita.
 
 ## 6. Gravar o JSON
 
@@ -182,12 +197,16 @@ Agrupar por campanha (nome, CP base e pasta de fotos no título do grupo). Por c
       "clickup_id": "17txe6ym9ap",
       "campanha": "Prorrogação Black",
       "cidade": "Caxias do Sul",
+      "cta": "*Entre em contato*\ne saiba mais!",
+      "letras_miudas": "Imagem meramente ilustrativa. Consulte condições de pagamento. Promoção válida até *10/12/2026*.",
+      "selos_arquivo": "G:/Meu Drive/Ampliar Digital/02. Clientes/_Materiais Gerais - Anjos/campanhas base/Campanha base - Black Anjos/elementos.ai",
       "arquivo_base": "G:/Meu Drive/Ampliar Digital/02. Clientes/_Materiais Gerais - Anjos/campanhas base/Campanha base - Black Anjos/CP base.ai",
       "pasta_fotos": "G:/Meu Drive/Ampliar Digital/02. Clientes/_Materiais Gerais - Anjos/campanhas base/Campanha base - Black Anjos/Fotos - Fundo loja",
       "pasta_saida": "G:/Meu Drive/Ampliar Digital/02. Clientes/Anjos - Caxias do Sul RS/02 - Editáveis Campanhas/12 DEZ - Prorrogação Black",
       "produtos": [
         { "foto": "Differenza Casal.png", "nome": "Differenza", "categoria": "Conjunto Box", "tamanho": "Casal",
-          "beneficios": ["Molas ensacadas", "Conforto na medida certa"], "frase": "Mais *conforto* para suas noites.", "preco": "parcelado",
+          "beneficios": ["Molas *ensacadas*", "Conforto na *medida certa*"], "frase": "Mais *conforto* para suas noites.",
+          "selo": "Linha Diamante", "enquadramento": { "story": [-0.11, -0.11, 1.22], "feed": [-0.12, -0.58, 1.22] }, "preco": "parcelado",
           "V_DE": "3399", "V_X": "18X", "V_parcela": "115", "V_total": "2070", "V_%": "", "V_Oferta_TXT": "" },
         { "foto": "Genialle Casal.png", "nome": "Genialle", "categoria": "Conjunto Box", "preco": "oferta",
           "V_Oferta_TXT": "Ultimas peças | Preço de Black" }
@@ -211,6 +230,7 @@ Agrupar por campanha (nome, CP base e pasta de fotos no título do grupo). Por c
 
 - No macOS, `pasta_saida` começa com `/Users/<usuário>/Library/CloudStorage/GoogleDrive-<conta>/Meu Drive/...` (seção 4).
 - `cliente` é obrigatório (vai no nome do arquivo).
+- `selos_arquivo` (caminho absoluto do arquivo de selos) e `selos_secao` (campo **Seção dos selos**) vêm do bloco da campanha no `campanhas.md`. `cta` e `letras_miudas` no cliente valem para todos os produtos; no produto, prevalecem.
 - `cidade` = nome da loja como aparece no logo, sem "Anjos" e sem UF (lista "Anjos Campo Grande" → `"Campo Grande"`; "Anjos Ecoville" → `"Ecoville"`). O script troca o texto "Cidade" dentro do símbolo `city` uma vez só: todas as instâncias continuam símbolo e o texto é reduzido se não couber na pílula. Sem `cidade`, o símbolo fica como está.
 - Dois cards do mesmo cliente: `"arquivo"` distinto em cada um.
 - Mais de 8 produtos num cliente: o script divide em partes.
@@ -258,3 +278,11 @@ Observações:
   - o grupo `oferta` repete a mesma frase nas duas caixas de texto — é o comportamento aceito;
   - a duplicação/ajuste do Feed é manual (o Feed do CP base não tem o bloco de produto/preço). Não automatizar.
 - Não abrir os `.ai` gerados para conferência/exportação de prévias sem o usuário pedir: abrir arquivos com fonte faltando via COM mostra janela modal e já travou o Illustrator. A conferência é o resumo do script.
+
+## 8. Atualizar o CP base com uma campanha final (sob pedido)
+
+Quando o usuário disser que uma campanha foi finalizada pelo chefe de design e pedir para comparar/aprender com ela:
+1. Abrir só para leitura (alertas desligados, fechar sem salvar) a versão final e a gerada pelo script; comparar texto a texto (fonte, corpo, posição), símbolos, selos e fotos.
+2. Listar as diferenças e separar: **dado do card** (CTA, selo, tamanho), **regra do script**, **desenho do CP base** e **layout especial** (não automatizar).
+3. Com aprovação: salvar um CP base novo ao lado do atual (`... (skill) v2.ai`), nunca sobrescrever; gerar a mesma campanha de novo e mostrar lado a lado com a final; só então trocar o **CP base** no `campanhas.md`.
+4. Gravar o enquadramento das fotos da versão final em `enquadramento.json` (com confirmação, ver seção 3).

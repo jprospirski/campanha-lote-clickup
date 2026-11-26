@@ -76,6 +76,14 @@ Cada CP base precisa ter os textos-marcador que o script substitui (`V_DE`, `V_X
 | Benefícios | Grupos com o texto `Para que busca conforto` (1 a 3) | Preenche de cima para baixo e apaga os que sobram. |
 | Áreas de diagramação | Retângulos sem preenchimento nem contorno na camada `guides`, nomeados `area_nome`, `area_preco` ou `area_info` | Centraliza o nome e o preço nas áreas e depois apaga os retângulos. Opções no nome: `\| esquerda`, `\| direita`, `\| max 145%` (o nome pode crescer até 145%, nomes curtos crescem mais), `\| espaco 130` (distância nome–preço na `area_info`). Oferta de uma caixa só que não cabe na área quebra em 2 linhas. |
 
+| Frase alinhada | Retângulo `area_frase` (opção `\| direita`) | Alinha a frase na área e reduz se não couber. |
+| Selo | Retângulos `area_selo` e `area_selo \| beneficios` | Copia o selo pedido no card do arquivo de selos (`Elementos.ai`) e encaixa na área; com benefícios usa a segunda. |
+| Faixa do tamanho | Item nomeado `faixa_tamanho` | Produto sem tamanho: apaga a faixa e centraliza o nome. `"tamanho": "Todos"` escreve "Todos os tamanhos". |
+| CTA | Símbolo `WhatsApp` com texto vivo | Troca o texto (trecho em `*` no peso forte), estica a pílula; CTA diferente por produto vira `WhatsApp 2`. |
+| Letras miúdas | Símbolo `letras miudas` com texto de área | Troca o texto (data em Bold) e reduz o corpo se não couber. |
+
+A memória de enquadramento (`enquadramento.json`, no Drive) guarda zoom e posição de cada foto aprovados numa campanha final.
+
 CP base sem esses elementos continua funcionando como antes.
 
 ### Cadastrar uma campanha

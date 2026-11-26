@@ -234,8 +234,28 @@
     //   "area_info"  -> linha nome + preço centralizada na área
     // Opções no nome: "| esquerda", "| direita", "| max 145%" (o nome pode crescer até 145%),
     // "| espaco 130" (distância nome-preço na area_info).
-    var SLOT_RE = /^\s*area_(nome|preco|info)\b(.*)$/i;
+    //   "area_frase" -> frase de destaque alinhada (e reduzida se não couber) na área
+    //   "area_selo"  -> lugar do selo do produto; "area_selo | beneficios" = lugar do selo
+    //                   quando o produto tem benefícios (senão usa "area_selo")
+    var SLOT_RE = /^\s*area_(nome|preco|info|frase|selo)\b(.*)$/i;
     var NAME_FIT_EXPONENT = 0.5; // nomes curtos crescem mais que nomes longos
+
+    // Tamanho "Todos" no JSON: a linha de tamanho do CP base vira este texto.
+    var SIZE_ALL_TEXT = "Todos os tamanhos";
+    // Produto sem tamanho: itens com este nome no CP base (ex.: faixa dourada da linha de
+    // tamanho) são apagados e o nome fica centralizado na altura da "area_nome".
+    var SIZE_STRIP_NAME = "faixa_tamanho";
+    // Destaque (*palavra*) nos benefícios: peso usado (cai para Bold se a família não tiver).
+    var BENEFIT_BOLD_WEIGHT = "Black";
+
+    // Textos dentro de símbolos (continuam símbolo): CTA e letras miúdas.
+    // Produtos com textos diferentes ganham uma cópia do símbolo ("WhatsApp 2"...).
+    //   anchor: lado que fica parado quando o texto muda de largura.
+    var SYMBOL_TEXT_SPECS = [
+        { field: "cta", names: ["whatsapp", "cta"], anchor: "left", pill: true },
+        { field: "letras_miudas", names: ["letras miudas", "letras miúdas", "legal"], anchor: "center", pill: false }
+    ];
+    var LEGAL_MIN_SIZE = 9; // letras miúdas: menor corpo antes de avisar que não coube
 
     // Palavras removidas do nome do arquivo da foto quando o produto não tem "nome"
     // (ex.: "Genialle Casal.png" -> "Genialle").
@@ -548,7 +568,18 @@
         if (!opts.warnings) opts.warnings = [];
         prepareSelectedItems(selectedItems);
 
+        // Biblioteca de selos: aberta só se algum produto pede selo.
+        opts.sealLib = null;
+        var wantsSeal = false;
+        for (var w = 0; w < selectedItems.length; w++) if (selectedItems[w].selo) wantsSeal = true;
+        if (wantsSeal && opts.selosFile) {
+            try { opts.sealLib = openSealLibrary(opts.selosFile, opts.selosSecao); }
+            catch (libErr) { opts.warnings.push((opts.label ? opts.label + ": " : "") + "não consegui abrir a biblioteca de selos: " + libErr.message); }
+        }
+
         var targetDoc = createTargetDocument(selectedItems);
+        try { targetDoc.activate(); } catch (eAct) {}
+        var symbolEntries = {};
 
         try {
             var targetLayerMap = createTargetLayers(targetDoc, LAYER_NAMES);
@@ -575,9 +606,19 @@
                 var feedDupMap = duplicateLayoutFromCache(ctx.sourceLayoutCache.feed, targetLayerMap, ctx.sourceFeedRect, feedRect);
                 fillArtboardText(ctx, ctx.priceGroupCache.feed, targetLayerMap, feedDupMap, selectedItem, productTagData, "feed", opts);
 
+                for (var sp = 0; sp < SYMBOL_TEXT_SPECS.length; sp++) {
+                    var fld = SYMBOL_TEXT_SPECS[sp].field;
+                    var val = selectedItem[fld] !== null && selectedItem[fld] !== undefined ? selectedItem[fld] : (opts[fld] || "");
+                    if (!trimText(val)) continue;
+                    if (!symbolEntries[fld]) symbolEntries[fld] = [];
+                    symbolEntries[fld].push({ rect: storyRect, text: val });
+                    symbolEntries[fld].push({ rect: feedRect, text: val });
+                }
+
+                var framing = selectedItem.enquadramento || {};
                 if (productFile) {
-                    placeImageWithClipping(targetDoc, targetLayerMap["fotos"], productFile, storyRect, productName + " - Story");
-                    placeImageWithClipping(targetDoc, targetLayerMap["fotos"], productFile, feedRect, productName + " - Feed");
+                    placeImageWithClipping(targetDoc, targetLayerMap["fotos"], productFile, storyRect, productName + " - Story", framing.story);
+                    placeImageWithClipping(targetDoc, targetLayerMap["fotos"], productFile, feedRect, productName + " - Feed", framing.feed);
                 } else {
                     placeMissingPhotoBox(targetDoc, targetLayerMap["fotos"], storyRect, productName + " - Story");
                     placeMissingPhotoBox(targetDoc, targetLayerMap["fotos"], feedRect, productName + " - Feed");
@@ -586,12 +627,31 @@
 
             if (opts.cidade) {
                 var cityWarning = applyCitySymbol(targetDoc, opts.cidade);
+                // Erro interno do Illustrator (MRAP) às vezes aparece no breakLink: tenta de novo.
+                if (cityWarning && /não foi possível/.test(cityWarning)) {
+                    try { app.redraw(); } catch (eRd) {}
+                    cityWarning = applyCitySymbol(targetDoc, opts.cidade);
+                }
                 if (cityWarning) opts.warnings.push((opts.label ? opts.label + ": " : "") + cityWarning);
+            }
+            for (var ss = 0; ss < SYMBOL_TEXT_SPECS.length; ss++) {
+                var spec = SYMBOL_TEXT_SPECS[ss];
+                if (!symbolEntries[spec.field]) continue;
+                var symWarn = applySymbolTextVariants(targetDoc, spec, symbolEntries[spec.field]);
+                if (symWarn && /não foi possível/.test(symWarn)) {
+                    try { app.redraw(); } catch (eRd2) {}
+                    symWarn = applySymbolTextVariants(targetDoc, spec, symbolEntries[spec.field]);
+                }
+                if (symWarn) opts.warnings.push((opts.label ? opts.label + ": " : "") + symWarn);
             }
         } catch (genErr) {
             genErr.targetDoc = targetDoc;
+            closeSealLibrary(opts.sealLib);
             throw genErr;
         }
+        closeSealLibrary(opts.sealLib);
+        opts.sealLib = null;
+        try { targetDoc.activate(); } catch (eAct2) {}
 
         return targetDoc;
     }
@@ -711,7 +771,7 @@
         var saved = false;
         try {
             ensureOutputFolder(job.client.outFolder);
-            targetDoc = generateCampaignDocument(ctx, job.items, { cidade: job.client.cidade, warnings: plan.warnings, label: job.label });
+            targetDoc = generateCampaignDocument(ctx, job.items, { cidade: job.client.cidade, cta: job.client.cta, letras_miudas: job.client.letras_miudas, selosFile: job.client.selosFile, selosSecao: job.client.selosSecao, warnings: plan.warnings, label: job.label });
             var embedFailed = plan.embed ? embedAllPlacedItems(targetDoc) : [];
             saveDocumentAsAi(targetDoc, job.outFile);
             saved = true;
@@ -847,7 +907,7 @@
                 var saved = false;
                 try {
                     ensureOutputFolder(job.client.outFolder);
-                    targetDoc = generateCampaignDocument(ctx, job.items, { cidade: job.client.cidade, warnings: plan.warnings, label: job.label });
+                    targetDoc = generateCampaignDocument(ctx, job.items, { cidade: job.client.cidade, cta: job.client.cta, letras_miudas: job.client.letras_miudas, selosFile: job.client.selosFile, selosSecao: job.client.selosSecao, warnings: plan.warnings, label: job.label });
                     job.embedFailed = plan.embed ? embedAllPlacedItems(targetDoc) : [];
                     saveDocumentAsAi(targetDoc, job.outFile);
                     saved = true;
@@ -1053,6 +1113,10 @@
                 arquivo: trimText(rawClient.arquivo),
                 campanha: trimText(rawClient.campanha) || plan.campanha,
                 cidade: trimText(rawClient.cidade),
+                cta: rawClient.cta === undefined || rawClient.cta === null ? "" : String(rawClient.cta),
+                letras_miudas: rawClient.letras_miudas === undefined || rawClient.letras_miudas === null ? "" : String(rawClient.letras_miudas),
+                selosFile: null,
+                selosSecao: trimText(rawClient.selos_secao),
                 baseFile: null,
                 fotosFolder: null,
                 outFolder: plan.outFolder,
@@ -1094,6 +1158,16 @@
                 } else if (client.fotosFolder.exists) {
                     client.baseFile = findBaseFile(client.fotosFolder);
                     if (!client.baseFile) client.errors.push(clientLabel + ': nenhum "CP base" em ' + client.fotosFolder.fsName + ' (informe "arquivo_base").');
+                }
+            }
+
+            // Biblioteca de selos (opcional): arquivo .ai com os selos da campanha.
+            var selosPath = trimText(rawClient.selos_arquivo);
+            if (selosPath && client.errors.length === configBefore) {
+                client.selosFile = resolveFile(selosPath, jsonFolder);
+                if (!client.selosFile.exists) {
+                    plan.warnings.push(clientLabel + ": biblioteca de selos não encontrada (" + client.selosFile.fsName + "); selos ficam para a revisão.");
+                    client.selosFile = null;
                 }
             }
 
@@ -1167,6 +1241,11 @@
         // Sem tamanho no card = sem bloco de tamanho na arte (a foto pode ser a Casal,
         // mas a arte não pode afirmar um tamanho que o card não informa).
         var tamanhoRaw = trimText(raw.tamanho);
+        var todosTamanhos = false;
+        if (/^todos( os tamanhos)?$/.test(normalizeKey(tamanhoRaw))) {
+            todosTamanhos = true;
+            tamanhoRaw = "";
+        }
         var tamanho = null;
         var medida = "";
         var semTamanho = false;
@@ -1236,6 +1315,11 @@
             semTamanho: semTamanho,
             beneficios: beneficios,
             frase: raw.frase === undefined || raw.frase === null ? "" : String(raw.frase),
+            todosTamanhos: todosTamanhos,
+            cta: raw.cta === undefined || raw.cta === null ? null : String(raw.cta),
+            letras_miudas: raw.letras_miudas === undefined || raw.letras_miudas === null ? null : String(raw.letras_miudas),
+            selo: trimText(raw.selo),
+            enquadramento: parseFraming(raw.enquadramento, label, plan.warnings),
             priceGroup: priceGroup,
             manualValues: values,
             cents: cents,
@@ -2507,7 +2591,11 @@
             fillOfferFrames(priceGroup, item.manualValues ? item.manualValues.V_Oferta_TXT : "");
         }
         if (priceGroup && item.cents) applyCents(priceGroup, item.cents);
-        if (item.semTamanho) frames = removeSizeBlock(frames);
+        if (item.todosTamanhos) setSizeFramesText(frames, SIZE_ALL_TEXT);
+        else if (item.semTamanho) {
+            frames = removeSizeBlock(frames);
+            removeNamedItems(dupMap["txt"], SIZE_STRIP_NAME);
+        }
         if (item.beneficios) {
             var slots = applyBenefits(frames, item.beneficios);
             if (slots === 0 && item.beneficios.length > 0 && kind === "story") {
@@ -2516,6 +2604,8 @@
         }
 
         frames = collectLiveFrames(frames);
+        var fraseFrames = [];
+        for (var ff = 0; ff < frames.length; ff++) if (isFraseFrame(frames[ff])) fraseFrames.push(frames[ff]);
         var fraseResult = fillFraseFrames(frames, item.frase);
         if (fraseResult.missing && kind === "story") warnings.push(label + ": sem frase de destaque - a caixa {{frase}} foi removida.");
         if (fraseResult.noBold && kind === "story") warnings.push(label + ": fonte Bold da frase não encontrada (" + fraseResult.noBold + "); destaque sem negrito.");
@@ -2524,7 +2614,21 @@
         if (priceGroup) collectTextFramesRecursive(priceGroup, frames);
         applyTextTagsToFrames(uniqueTextFrames(frames), tagData);
 
-        applySlotLayout(dupMap, nameBlock, priceGroup);
+        var seal = null;
+        if (item.selo) {
+            if (opts.sealLib) {
+                seal = placeSealFromLibrary(opts.sealLib, item.selo, targetLayerMap["txt"]);
+                if (!seal && kind === "story") warnings.push(label + ": selo \"" + item.selo + "\" não está na biblioteca de selos - inserir na revisão (e salvar o selo novo no arquivo de selos).");
+            } else if (kind === "story") {
+                warnings.push(label + ": selo \"" + item.selo + "\" sem biblioteca de selos configurada - inserir na revisão.");
+            }
+        }
+        var hasBenefits = !!(item.beneficios && item.beneficios.length);
+        var placed = applySlotLayout(dupMap, nameBlock, priceGroup, { fraseFrames: collectLiveFrames(fraseFrames), seal: seal, hasBenefits: hasBenefits, centerNameY: !!(item.semTamanho && !item.todosTamanhos) });
+        if (seal && !placed.seal) {
+            try { seal.remove(); } catch (eSR) {}
+            if (kind === "story") warnings.push(label + ": o CP base não tem \"area_selo\" - selo \"" + item.selo + "\" não colocado.");
+        }
     }
 
     // Bloco do nome: item de nível superior da camada txt que contém {{nome}}/{{Categoria}}.
@@ -2641,13 +2745,25 @@
     // Troca o texto mantendo a formatação do CP base (fonte, corpo, tracking, cor)
     // e aplica a versão Bold da família nos trechos marcados. Retorna a fonte Bold
     // procurada quando ela não existe ("" quando deu certo).
-    function setMarkedText(tf, parsed) {
+    // preferExisting: usa como "bold" a outra fonte que já existe no texto (ex.: "Chama no *WhatsApp*").
+    function setMarkedText(tf, parsed, preferExisting, weight) {
         var baseFont = null;
-        try { baseFont = tf.textRange.characters[0].characterAttributes.textFont; } catch (e) {}
+        var otherFont = null;
+        try {
+            var chars0 = tf.textRange.characters;
+            baseFont = chars0[0].characterAttributes.textFont;
+            if (preferExisting) {
+                for (var q = 1; q < chars0.length; q++) {
+                    var fq = chars0[q].characterAttributes.textFont;
+                    if (fq.name !== baseFont.name) { otherFont = fq; break; }
+                }
+            }
+        } catch (e) {}
         safeSetTextContents(tf, parsed.text);
+        if (baseFont) { try { tf.textRange.characterAttributes.textFont = baseFont; } catch (eB) {} }
         if (!parsed.bold.length) return "";
 
-        var boldFont = findBoldFont(baseFont);
+        var boldFont = otherFont || (weight ? findBoldFont(baseFont, weight) : null) || findBoldFont(baseFont);
         if (!boldFont) return baseFont ? (baseFont.family + " Bold") : "Bold";
 
         var chars = null;
@@ -2662,32 +2778,318 @@
     }
 
     // Cache guardado na própria função: "var" no corpo do script não chega a rodar no modo automático.
-    function findBoldFont(baseFont) {
+    function findBoldFont(baseFont, weight) {
         if (!baseFont) return null;
+        weight = weight || "Bold";
         if (!findBoldFont.cache) findBoldFont.cache = {};
         var BOLD_FONT_CACHE = findBoldFont.cache;
         var family = "";
         var name = "";
         try { family = baseFont.family; name = baseFont.name; } catch (e) {}
-        if (BOLD_FONT_CACHE.hasOwnProperty(name)) return BOLD_FONT_CACHE[name];
+        var cacheKey = name + "|" + weight;
+        if (BOLD_FONT_CACHE.hasOwnProperty(cacheKey)) return BOLD_FONT_CACHE[cacheKey];
 
         var found = null;
         // 1) Mesmo nome PostScript com o estilo trocado (Humanist521BT-Light -> Humanist521BT-Bold)
         var dash = name.lastIndexOf("-");
         if (dash > 0) {
-            try { found = app.textFonts.getByName(name.substring(0, dash) + "-Bold"); } catch (e2) { found = null; }
+            try { found = app.textFonts.getByName(name.substring(0, dash) + "-" + weight); } catch (e2) { found = null; }
         }
         // 2) Qualquer "Bold" da mesma família (sem Italic)
         if (!found) {
             try {
                 for (var i = 0; i < app.textFonts.length; i++) {
                     var f = app.textFonts[i];
-                    if (f.family === family && /^bold$/i.test(f.style)) { found = f; break; }
+                    if (f.family === family && f.style.toLowerCase() === weight.toLowerCase()) { found = f; break; }
                 }
             } catch (e3) {}
         }
-        BOLD_FONT_CACHE[name] = found;
+        BOLD_FONT_CACHE[cacheKey] = found;
         return found;
+    }
+
+    // =========================
+    // TAMANHO "Todos"
+    // =========================
+    function setSizeFramesText(frames, text) {
+        var target = null;
+        var others = [];
+        for (var i = 0; i < frames.length; i++) {
+            if (!isSizeFrame(frames[i])) continue;
+            var c = "";
+            try { c = frames[i].contents || ""; } catch (e) {}
+            if (!target && hasTagToken(c, "tamanho")) target = frames[i];
+            else others.push(frames[i]);
+        }
+        if (!target && others.length) target = others.shift();
+        if (!target) return;
+        safeSetTextContents(target, text);
+        for (var r = 0; r < others.length; r++) { try { others[r].remove(); } catch (e2) {} }
+    }
+
+    // =========================
+    // ENQUADRAMENTO (memória)
+    // =========================
+    // "enquadramento": { "story": [x, y, largura], "feed": [x, y, largura] } em frações da prancheta.
+    function parseFraming(raw, label, warnings) {
+        if (!raw || typeof raw !== "object") return null;
+        function arr(v) {
+            if (!(v instanceof Array) || v.length < 3) return null;
+            var out = [];
+            for (var i = 0; i < 3; i++) {
+                var n = parseFloat(v[i]);
+                if (isNaN(n)) return null;
+                out.push(n);
+            }
+            return out[2] > 0 ? out : null;
+        }
+        var f = { story: arr(raw.story), feed: arr(raw.feed) };
+        if ((raw.story && !f.story) || (raw.feed && !f.feed)) warnings.push(label + ": enquadramento inválido (use [x, y, largura]); foto centralizada.");
+        return f;
+    }
+
+    // =========================
+    // SELOS (biblioteca .ai)
+    // =========================
+    function sealKey(v) {
+        return normalizeKey(String(v || "").replace(/[\r\n\u0003]+/g, " ")).replace(/[^a-z0-9]+/g, "");
+    }
+
+    function openSealLibrary(file, secao) {
+        var prevUI = app.userInteractionLevel;
+        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
+        var doc;
+        try { doc = app.open(file); } finally { app.userInteractionLevel = prevUI; }
+        var lib = { doc: doc, cands: [], headers: [], secao: sealKey(secao) };
+        function center(it) { var b = it.geometricBounds; return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; }
+        for (var l = 0; l < doc.layers.length; l++) {
+            var layer = doc.layers[l];
+            for (var i = 0; i < layer.pageItems.length; i++) {
+                var it = layer.pageItems[i];
+                var keys = [];
+                try { if (it.name) keys.push(sealKey(it.name)); } catch (e) {}
+                if (it.typename === "TextFrame") {
+                    lib.headers.push({ key: sealKey(it.contents), c: center(it) });
+                    continue;
+                }
+                if (it.typename === "SymbolItem") { try { keys.push(sealKey(it.symbol.name)); } catch (e2) {} }
+                if (it.typename === "GroupItem") {
+                    var fr = [];
+                    collectTextFramesRecursive(it, fr);
+                    var all = [];
+                    for (var f = 0; f < fr.length; f++) { try { all.push(fr[f].contents); } catch (e3) {} }
+                    if (all.length) keys.push(sealKey(all.join(" ")));
+                    for (var f2 = 0; f2 < fr.length; f2++) { try { keys.push(sealKey(fr[f2].contents)); } catch (e4) {} }
+                }
+                if (keys.length) lib.cands.push({ item: it, keys: keys, c: center(it) });
+            }
+        }
+        return lib;
+    }
+
+    function findSeal(lib, name) {
+        var k = sealKey(name);
+        if (!k) return null;
+        var exact = [], partial = [];
+        for (var i = 0; i < lib.cands.length; i++) {
+            var keys = lib.cands[i].keys, hitE = false, hitP = false;
+            for (var j = 0; j < keys.length; j++) {
+                if (!keys[j]) continue;
+                if (keys[j] === k) hitE = true;
+                else if (keys[j].indexOf(k) >= 0) hitP = true;
+            }
+            if (hitE) exact.push(lib.cands[i]); else if (hitP) partial.push(lib.cands[i]);
+        }
+        var list = exact.length ? exact : (partial.length === 1 ? partial : []);
+        if (list.length <= 1) return list.length ? list[0].item : null;
+        // Arquivo com selos de várias campanhas: fica com o mais perto do título da seção.
+        if (lib.secao) {
+            var h = null;
+            for (var t = 0; t < lib.headers.length; t++) if (lib.headers[t].key.indexOf(lib.secao) >= 0 || lib.secao.indexOf(lib.headers[t].key) >= 0) { h = lib.headers[t]; break; }
+            if (h) {
+                var best = null, bd = Infinity;
+                for (var m = 0; m < list.length; m++) {
+                    var dx = list[m].c[0] - h.c[0], dy = list[m].c[1] - h.c[1];
+                    var d = dx * dx + dy * dy;
+                    if (d < bd) { bd = d; best = list[m]; }
+                }
+                return best.item;
+            }
+        }
+        return list[0].item;
+    }
+
+    function placeSealFromLibrary(lib, name, layer) {
+        var src = findSeal(lib, name);
+        if (!src) return null;
+        var dup = null;
+        try { dup = src.duplicate(layer, ElementPlacement.PLACEATBEGINNING); } catch (e) { return null; }
+        try { dup.name = "selo - " + name; } catch (e2) {}
+        return dup;
+    }
+
+    function closeSealLibrary(lib) {
+        if (!lib || !lib.doc) return;
+        try { lib.doc.close(SaveOptions.DONOTSAVECHANGES); } catch (e) {}
+        lib.doc = null;
+    }
+
+    // =========================
+    // TEXTOS EM SÍMBOLOS (CTA, letras miúdas)
+    // =========================
+    // entries: [{ rect: artboardRect, text: "..." }]. Cada texto diferente vira uma
+    // versão do símbolo; todas as instâncias continuam símbolo.
+    function applySymbolTextVariants(doc, spec, entries) {
+        var sym = null;
+        for (var s = 0; s < doc.symbols.length && !sym; s++) {
+            var sn = normalizeKey(doc.symbols[s].name);
+            for (var n = 0; n < spec.names.length; n++) if (sn === normalizeKey(spec.names[n])) { sym = doc.symbols[s]; break; }
+        }
+        if (!sym) return "o CP base não tem o símbolo de " + (spec.field === "cta" ? "CTA (\"WhatsApp\")" : "letras miúdas") + " - texto não aplicado.";
+
+        var insts = [];
+        for (var i = 0; i < doc.symbolItems.length; i++) {
+            try { if (doc.symbolItems[i].symbol === sym) insts.push(doc.symbolItems[i]); } catch (e) {}
+        }
+        if (!insts.length) return "";
+
+        var values = [], byValue = {}, assigned = 0;
+        for (var k = 0; k < insts.length; k++) {
+            var b = insts[k].geometricBounds;
+            var cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+            for (var e2 = 0; e2 < entries.length; e2++) {
+                var r = entries[e2].rect;
+                if (cx >= r[0] && cx <= r[2] && cy <= r[1] && cy >= r[3]) {
+                    var v = entries[e2].text;
+                    if (!byValue.hasOwnProperty(v)) { byValue[v] = []; values.push(v); }
+                    byValue[v].push({ inst: insts[k], b: b });
+                    assigned++;
+                    break;
+                }
+            }
+        }
+        if (!values.length) return "";
+
+        var warn = "";
+        var oldName = sym.name;
+        var made = [];
+        for (var vi = 0; vi < values.length; vi++) {
+            var res = buildSymbolTextVariant(doc, sym, values[vi], spec);
+            if (res.error) return "não foi possível editar o símbolo \"" + oldName + "\": " + res.error;
+            if (res.warning) warn = res.warning;
+            made.push(res.symbol);
+            var list = byValue[values[vi]];
+            for (var li = 0; li < list.length; li++) {
+                var it = list[li].inst, ob = list[li].b;
+                it.symbol = res.symbol;
+                var nb = it.geometricBounds;
+                var dx = spec.anchor === "left" ? ob[0] - nb[0] : ((ob[0] + ob[2]) - (nb[0] + nb[2])) / 2;
+                it.translate(dx, ((ob[1] + ob[3]) - (nb[1] + nb[3])) / 2);
+            }
+        }
+        if (assigned === insts.length) {
+            try { sym.remove(); made[0].name = oldName; } catch (eR) {}
+            for (var m = 1; m < made.length; m++) { try { made[m].name = oldName + " " + (m + 1); } catch (eN) {} }
+        } else {
+            for (var m2 = 0; m2 < made.length; m2++) { try { made[m2].name = oldName + " " + (m2 + 2); } catch (eN2) {} }
+        }
+        return warn;
+    }
+
+    function buildSymbolTextVariant(doc, sym, value, spec) {
+        var out = { symbol: null, error: "", warning: "" };
+        var tmpLayer = doc.layers.add();
+        tmpLayer.name = "__simbolo_tmp";
+        try {
+            var tmp = tmpLayer.symbolItems.add(sym);
+            doc.selection = null;
+            tmp.selected = true;
+            tmp.breakLink();
+            var sel = doc.selection;
+            var group = tmpLayer.groupItems.add();
+            for (var k = sel.length - 1; k >= 0; k--) sel[k].move(group, ElementPlacement.PLACEATBEGINNING);
+            doc.selection = null;
+
+            var frames = [];
+            collectTextFramesRecursive(group, frames);
+            var target = null, bestArea = -1;
+            for (var f = 0; f < frames.length; f++) {
+                var c = "";
+                try { c = frames[f].contents || ""; } catch (e) {}
+                if (!trimText(c)) continue;
+                var fb = frames[f].geometricBounds;
+                var area = (fb[2] - fb[0]) * (fb[1] - fb[3]);
+                if (area > bestArea) { bestArea = area; target = frames[f]; }
+            }
+            if (!target) throw new Error("símbolo sem texto");
+
+            var ob = target.geometricBounds;
+            var pill = spec.pill ? findContainerPath(group, target) : null;
+            var pb = pill ? pill.geometricBounds : null;
+            var rightPad = pb ? pb[2] - ob[2] : 0;
+
+            setMarkedText(target, parseMarkedText(value, false), true);
+
+            if (pill) {
+                var maxH = (pb[1] - pb[3]) * 0.92;
+                var nb = target.geometricBounds;
+                var th = nb[1] - nb[3];
+                if (th > maxH && th > 0) scaleTextSize(target, maxH / th);
+                nb = target.geometricBounds;
+                target.translate(0, (pb[1] + pb[3]) / 2 - (nb[1] + nb[3]) / 2);
+                nb = target.geometricBounds;
+                var delta = (nb[2] + rightPad) - pb[2];
+                if (Math.abs(delta) > 0.5) movePathRightSide(pill, delta);
+            } else if (target.kind === TextType.AREATEXT) {
+                var guard = 0;
+                while (textOverflows(target) && guard < 40) {
+                    var sz = target.textRange.characterAttributes.size;
+                    if (sz - 0.5 < LEGAL_MIN_SIZE) break;
+                    scaleTextSize(target, (sz - 0.5) / sz);
+                    guard++;
+                }
+                if (textOverflows(target)) out.warning = "o texto das letras miúdas não coube na caixa - conferir na revisão.";
+            }
+
+            out.symbol = doc.symbols.add(group, SymbolRegistrationPoint.SYMBOLCENTERPOINT);
+            group.remove();
+        } catch (err) {
+            out.error = err.message;
+        }
+        try { tmpLayer.remove(); } catch (e2) {}
+        return out;
+    }
+
+    function scaleTextSize(tf, k) {
+        try {
+            var chars = tf.textRange.characters;
+            for (var i = 0; i < chars.length; i++) chars[i].characterAttributes.size = chars[i].characterAttributes.size * k;
+        } catch (e) {}
+    }
+
+    function textOverflows(tf) {
+        try {
+            var shown = 0;
+            for (var i = 0; i < tf.lines.length; i++) shown += tf.lines[i].characters.length;
+            return shown < tf.characters.length - 1;
+        } catch (e) { return false; }
+    }
+
+    // Estica a pílula para a direita sem deformar os cantos arredondados.
+    function movePathRightSide(path, delta) {
+        var paths = path.typename === "CompoundPathItem" ? path.pathItems : [path];
+        var b = path.geometricBounds;
+        var mid = (b[0] + b[2]) / 2;
+        for (var p = 0; p < paths.length; p++) {
+            var pts = paths[p].pathPoints;
+            for (var i = 0; i < pts.length; i++) {
+                var pt = pts[i];
+                if (pt.anchor[0] <= mid) continue;
+                pt.anchor = [pt.anchor[0] + delta, pt.anchor[1]];
+                pt.leftDirection = [pt.leftDirection[0] + delta, pt.leftDirection[1]];
+                pt.rightDirection = [pt.rightDirection[0] + delta, pt.rightDirection[1]];
+            }
+        }
     }
 
     // =========================
@@ -2826,6 +3228,7 @@
                 if (mm) slot.max = parseFloat(mm[1].replace(",", ".")) / 100;
                 var gm = /espaco\s*(\d+(?:[.,]\d+)?)/.exec(optText);
                 if (gm) slot.gap = parseFloat(gm[1].replace(",", "."));
+                if (type === "selo" && /benef/.test(optText)) type = "selo_beneficios";
                 slots[type] = slot;
                 found = true;
             }
@@ -2875,14 +3278,45 @@
         if (cut > 0) safeSetTextContents(frames[0], text.substring(0, cut) + FORCED_BREAK + text.substring(cut + 1));
     }
 
-    function applySlotLayout(dupMap, nameBlock, priceGroup) {
+    function applySlotLayout(dupMap, nameBlock, priceGroup, extra) {
+        extra = extra || {};
+        var result = { seal: false };
         var slots = collectSlots(dupMap);
-        if (!slots) return;
+        if (!slots) return result;
 
         try {
+            if (slots.frase && extra.fraseFrames) {
+                for (var fr = 0; fr < extra.fraseFrames.length; fr++) {
+                    var tf = extra.fraseFrames[fr];
+                    var fb = getStableBounds(tf);
+                    var faw = slots.frase.bounds[2] - slots.frase.bounds[0];
+                    var fw = fb[2] - fb[0];
+                    if (fw > faw && fw > 0) {
+                        try {
+                            var chars = tf.textRange.characters;
+                            var k0 = faw / fw;
+                            for (var ci = 0; ci < chars.length; ci++) chars[ci].characterAttributes.size = chars[ci].characterAttributes.size * k0;
+                        } catch (eFz) {}
+                    }
+                    alignX(tf, slots.frase.bounds, slots.frase.align);
+                }
+            }
+            if (extra.seal) {
+                var sSlot = (extra.hasBenefits && slots.selo_beneficios) ? slots.selo_beneficios : (slots.selo || slots.selo_beneficios);
+                if (sSlot) {
+                    fitInto(extra.seal, sSlot.bounds);
+                    result.seal = true;
+                }
+            }
+
             if (nameBlock && slots.nome) {
                 fitNameBlock(nameBlock, slots.nome);
                 alignX(nameBlock, slots.nome.bounds, slots.nome.align);
+                if (extra.centerNameY) {
+                    var nbY = getStableBounds(nameBlock);
+                    var arY = slots.nome.bounds;
+                    nameBlock.translate(0, (arY[1] + arY[3]) / 2 - (nbY[1] + nbY[3]) / 2);
+                }
             }
             if (priceGroup && slots.preco) {
                 var aw = slots.preco.bounds[2] - slots.preco.bounds[0];
@@ -2935,6 +3369,35 @@
         for (var key in slots) {
             if (slots.hasOwnProperty(key)) { try { slots[key].item.remove(); } catch (e) {} }
         }
+        return result;
+    }
+
+    function removeNamedItems(items, name) {
+        if (!items) return;
+        var doomed = [];
+        (function walk(list) {
+            for (var i = 0; i < list.length; i++) {
+                var it = list[i];
+                var nm = "";
+                try { nm = it.name || ""; } catch (e) {}
+                if (normalizeKey(nm) === normalizeKey(name)) { doomed.push(it); continue; }
+                try { if (it.typename === "GroupItem") walk(it.pageItems); } catch (e2) {}
+            }
+        })(items);
+        for (var d = 0; d < doomed.length; d++) { try { doomed[d].remove(); } catch (e3) {} }
+    }
+
+    // Escala o item para caber no retângulo (sem distorcer) e centraliza.
+    function fitInto(item, rect) {
+        var b = getStableBounds(item);
+        var w = b[2] - b[0], h = b[1] - b[3];
+        var aw = rect[2] - rect[0], ah = rect[1] - rect[3];
+        if (w > 0 && h > 0) {
+            var k = Math.min(aw / w, ah / h) * 100;
+            if (Math.abs(k - 100) > 0.5) { try { item.resize(k, k, true, true, true, true, k, Transformation.CENTER); } catch (e) {} }
+        }
+        var nb = getStableBounds(item);
+        item.translate((rect[0] + rect[2]) / 2 - (nb[0] + nb[2]) / 2, (rect[1] + rect[3]) / 2 - (nb[1] + nb[3]) / 2);
     }
 
     // Centavos: no CP base o ",00" de cada valor é um texto separado, logo à direita
@@ -3067,7 +3530,7 @@
                 var phContent = "";
                 try { phContent = tf.contents || ""; } catch (eC) {}
                 var twoLines = /[\u0003\r]/.test(phContent);
-                safeSetTextContents(tf, parseMarkedText(list[k], twoLines).text);
+                setMarkedText(tf, parseMarkedText(list[k], twoLines), false, BENEFIT_BOLD_WEIGHT);
                 continue;
             }
             var parent = null;
@@ -3889,7 +4352,8 @@
         box.name = limitText("SEM FOTO - " + groupName, 90);
     }
 
-    function placeImageWithClipping(doc, layer, imageFile, artRect, groupName) {
+    // framing (opcional): [x, y, largura] da foto em frações da prancheta (memória de enquadramento).
+    function placeImageWithClipping(doc, layer, imageFile, artRect, groupName, framing) {
         var left = artRect[0];
         var top = artRect[1];
         var width = Math.abs(artRect[2] - artRect[0]);
@@ -3926,6 +4390,20 @@
 
         placed.left = left + ((width - placed.width) / 2);
         placed.top = top - ((height - placed.height) / 2);
+
+        if (framing && framing.length >= 3 && framing[2] > 0) {
+            var fk = (framing[2] * width) / placed.width * 100;
+            // Nunca deixar a foto menor que a prancheta (sobraria fundo vazio).
+            var minK = Math.max(width / placed.width, height / placed.height) * 100;
+            if (fk < minK) fk = minK;
+            placed.resize(fk, fk);
+            placed.left = left + framing[0] * width;
+            placed.top = top - framing[1] * height;
+            if (placed.left > left) placed.left = left;
+            if (placed.top < top) placed.top = top;
+            if (placed.left + placed.width < left + width) placed.left = left + width - placed.width;
+            if (placed.top - placed.height > top - height) placed.top = top - height + placed.height;
+        }
 
         var mask = layer.pathItems.rectangle(top, left, width, height);
         mask.name = limitText("máscara - " + groupName, 90);
