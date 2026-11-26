@@ -15,3 +15,11 @@ relatorio_lote.txt
 Campanhas base/
 Fotos/
 campanhas.md
+
+# Arquivos soltos (fotos do celular etc.)
+*.heic
+*.HEIC
+*.pdf
+*.mov
+*.MOV
+*.mp4
